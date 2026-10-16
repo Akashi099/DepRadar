@@ -75,7 +75,186 @@ fn parse_string_array(raw: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
+
+    /// One bundled dataset under test.
+    struct Dataset {
+        /// File name under `data/popular-packages/`, for failure messages.
+        file: &'static str,
+        /// The embedded JSON text.
+        raw: &'static str,
+        /// Whether a (lowercase, trimmed) name is valid on this registry.
+        is_valid_name: fn(&str) -> bool,
+        /// Maps a name to the key the registry treats as its identity, so
+        /// two spellings of the same package count as duplicates.
+        identity: fn(&str) -> String,
+    }
+
+    const DATASETS: &[Dataset] = &[
+        Dataset {
+            file: "npm-top1000.json",
+            raw: NPM_TOP_PACKAGES_JSON,
+            is_valid_name: is_valid_npm_name,
+            identity: str::to_string,
+        },
+        Dataset {
+            file: "pypi-top1000.json",
+            raw: PYPI_TOP_PACKAGES_JSON,
+            is_valid_name: is_valid_pypi_name,
+            identity: normalize_pypi_name,
+        },
+    ];
+
+    /// npm: an optional `@scope/` prefix, then a name, each made of
+    /// `a-z 0-9 - . _ ~` and not starting with `.` or `_`; at most 214
+    /// characters in total.
+    fn is_valid_npm_name(name: &str) -> bool {
+        fn is_valid_part(part: &str) -> bool {
+            !part.is_empty()
+                && !part.starts_with(['.', '_'])
+                && part.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || "-._~".contains(c)
+                })
+        }
+
+        if name.len() > 214 {
+            return false;
+        }
+        match name.strip_prefix('@') {
+            Some(scoped) => match scoped.split_once('/') {
+                Some((scope, rest)) => is_valid_part(scope) && is_valid_part(rest),
+                None => false,
+            },
+            None => is_valid_part(name),
+        }
+    }
+
+    /// PyPI (PEP 508): `a-z 0-9 - . _`, starting and ending with a letter or
+    /// digit.
+    fn is_valid_pypi_name(name: &str) -> bool {
+        let is_alnum = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+        name.starts_with(is_alnum)
+            && name.ends_with(is_alnum)
+            && name.chars().all(|c| is_alnum(c) || "-._".contains(c))
+    }
+
+    /// PEP 503 normalisation: runs of `-`, `_` and `.` collapse to one `-`,
+    /// so `ruamel.yaml` and `ruamel-yaml` are the same project.
+    fn normalize_pypi_name(name: &str) -> String {
+        let mut out = String::with_capacity(name.len());
+        for c in name.chars() {
+            if "-_.".contains(c) {
+                if !out.ends_with('-') {
+                    out.push('-');
+                }
+            } else {
+                out.push(c.to_ascii_lowercase());
+            }
+        }
+        out
+    }
+
+    /// Returns every problem with one dataset, one line per bad entry.
+    fn dataset_problems(dataset: &Dataset) -> Vec<String> {
+        let mut problems = Vec::new();
+
+        // The loader's hand-rolled parser accepts anything, so check the file
+        // really is a flat JSON array of strings and that both parsers agree.
+        match serde_json::from_str::<Vec<String>>(dataset.raw) {
+            Ok(strict) if strict == parse_string_array(dataset.raw) => {}
+            Ok(_) => problems.push("loader parses the file differently from serde_json".into()),
+            Err(err) => problems.push(format!("not a JSON array of strings: {err}")),
+        }
+
+        let names = parse_string_array(dataset.raw);
+        if names.is_empty() {
+            problems.push("no entries".into());
+        }
+
+        let mut seen = HashSet::new();
+        for name in &names {
+            if name.trim() != name {
+                problems.push(format!("{name:?}: leading or trailing whitespace"));
+            }
+            if name.to_lowercase() != *name {
+                problems.push(format!("{name:?}: not lowercase"));
+            }
+            if !(dataset.is_valid_name)(name) {
+                problems.push(format!("{name:?}: not a valid name on this registry"));
+            }
+            if !seen.insert((dataset.identity)(name)) {
+                problems.push(format!("{name:?}: duplicate entry"));
+            }
+        }
+
+        problems
+    }
+
+    #[test]
+    fn every_dataset_entry_is_unique_trimmed_lowercase_and_valid() {
+        let mut report = Vec::new();
+        for dataset in DATASETS {
+            for problem in dataset_problems(dataset) {
+                report.push(format!("{}: {problem}", dataset.file));
+            }
+        }
+        assert!(
+            report.is_empty(),
+            "bad entries in data/popular-packages/:\n  {}",
+            report.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn validation_catches_each_kind_of_bad_entry() {
+        let broken = Dataset {
+            file: "broken.json",
+            raw: r#"["react", " lodash", "React", "re act", "react", "_private"]"#,
+            is_valid_name: is_valid_npm_name,
+            identity: str::to_string,
+        };
+        let problems = dataset_problems(&broken);
+        for expected in [
+            r#"" lodash": leading or trailing whitespace"#,
+            r#""React": not lowercase"#,
+            r#""re act": not a valid name on this registry"#,
+            r#""react": duplicate entry"#,
+            r#""_private": not a valid name on this registry"#,
+        ] {
+            assert!(
+                problems.iter().any(|p| p == expected),
+                "expected {expected:?} in {problems:#?}"
+            );
+        }
+
+        // PyPI duplicates are detected after PEP 503 normalisation.
+        let pypi = Dataset {
+            file: "pypi.json",
+            raw: r#"["ruamel.yaml", "ruamel-yaml"]"#,
+            is_valid_name: is_valid_pypi_name,
+            identity: normalize_pypi_name,
+        };
+        assert_eq!(
+            dataset_problems(&pypi),
+            vec![r#""ruamel-yaml": duplicate entry"#.to_string()]
+        );
+
+        let not_strings = Dataset {
+            file: "numbers.json",
+            raw: r#"["react", 42]"#,
+            is_valid_name: is_valid_npm_name,
+            identity: str::to_string,
+        };
+        let problems = dataset_problems(&not_strings);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with("not a JSON array of strings")),
+            "expected a JSON shape error in {problems:#?}"
+        );
+    }
 
     #[test]
     fn loader_returns_non_empty_list_including_known_packages() {

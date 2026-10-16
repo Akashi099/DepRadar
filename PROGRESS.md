@@ -319,3 +319,27 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** ALLEN-AYODEJI
 - **Closes:** N/A
 - **Status:** Merged.
+
+### typosquat scanner — dataset validation test
+
+- **What:** A test in `src/typosquat/dataset.rs` loads every bundled
+  popular-package file and checks that each entry has no leading or trailing
+  whitespace, is lowercase, is a valid name on its registry, and is not a
+  duplicate.
+  - npm names are checked against npm's naming rules, including `@scope/`
+    prefixes.
+  - PyPI names are checked against PEP 508, and duplicates are found after
+    PEP 503 normalisation, so `ruamel.yaml` and `ruamel-yaml` count as the
+    same project.
+  - It also checks that each file is a flat JSON array of strings, and that
+    the loader's hand-rolled parser reads it the same way `serde_json` does.
+
+  All failures are reported together, one line per entry. A second test
+  feeds the checks deliberately broken input (whitespace, uppercase, an
+  invalid character, a leading `_`, a duplicate, a PEP 503 duplicate, a
+  non-string element) and asserts each one is caught.
+- **Data fix:** lowercased the 9 mixed-case PyPI entries the new test
+  flagged (`PyWavelets`, `types-PyYAML`, `cx-Oracle`, …).
+- **By:** Austinaminu2
+- **Closes:** #41
+- **Status:** In review.
