@@ -319,3 +319,19 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** ALLEN-AYODEJI
 - **Closes:** N/A
 - **Status:** Merged.
+
+### typosquat scanner — JSON-serializable `ScanResult`
+
+- **What:** `ScanResult` in `src/typosquat/scanner.rs` now derives
+  `serde::Serialize` and `serde::Deserialize` with snake_case keys, so the
+  CLI and future report formats can emit machine-readable output.
+  `distance_match` serializes as a `[name, distance]` array and an unset
+  signal as `null`.
+- **Tests:** one test asserts the exact JSON for `expresss`
+  (`{"candidate":"expresss","distance_match":["express",1],"homoglyph_match":null}`).
+  A round-trip test serializes and deserializes three results (distance
+  only, both signals, clean) through `serde_json` and checks each comes back
+  unchanged.
+- **By:** Austinaminu2
+- **Closes:** #38
+- **Status:** In review.
