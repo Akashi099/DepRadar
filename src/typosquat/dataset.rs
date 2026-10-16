@@ -27,8 +27,9 @@ const CRATES_TOP_PACKAGES_JSON: &str =
 /// them as a single combined list.
 ///
 /// npm entries come first, in file order, followed by PyPI entries and then
-/// crates.io entries, each in file order. Names are returned as-is; no normalisation or de-duplication is
-/// applied — that belongs with the (not-yet-written) scoring logic.
+/// crates.io entries, each in file order. Names are returned as-is; no
+/// normalisation or de-duplication is applied — that belongs with the
+/// (not-yet-written) scoring logic.
 pub fn load_popular_packages() -> Vec<String> {
     let mut combined = parse_string_array(NPM_TOP_PACKAGES_JSON);
     combined.extend(parse_string_array(PYPI_TOP_PACKAGES_JSON));
