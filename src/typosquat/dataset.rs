@@ -1,16 +1,16 @@
-//! Bundled lists of popular npm and PyPI package names.
+//! Bundled lists of popular npm, PyPI and crates.io package names.
 //!
 //! Typosquatting attacks work by publishing a package whose name is one edit
 //! away from something popular (`reqeusts`, `expresss`, `lodahs`). Detecting
 //! that needs a reference set of "names worth imitating" to compare against.
-//! This module ships that reference set as two JSON arrays under
+//! This module ships that reference set as one JSON array per registry under
 //! `data/popular-packages/` and exposes a single loader that returns them as
 //! one combined list.
 //!
-//! The lists are a hand-curated, representative snapshot of widely-used
-//! packages — not a live-fetched ranking. Refreshing them from the registries'
-//! real download stats is a later task; nothing here depends on the exact
-//! ordering or count.
+//! The npm and PyPI lists are a hand-curated, representative snapshot of
+//! widely-used packages; the crates.io list is the top 1000 crates by recent
+//! downloads (see `data/popular-packages/README.md` for sources and dates).
+//! Nothing here depends on the exact ordering or count.
 
 /// Raw JSON text of the npm popular-package list, embedded at compile time.
 const NPM_TOP_PACKAGES_JSON: &str = include_str!("../../data/popular-packages/npm-top1000.json");
@@ -18,15 +18,21 @@ const NPM_TOP_PACKAGES_JSON: &str = include_str!("../../data/popular-packages/np
 /// Raw JSON text of the PyPI popular-package list, embedded at compile time.
 const PYPI_TOP_PACKAGES_JSON: &str = include_str!("../../data/popular-packages/pypi-top1000.json");
 
-/// Loads the bundled npm and PyPI popular-package lists and returns them as a
-/// single combined list.
+/// Raw JSON text of the crates.io popular-package list, embedded at compile
+/// time.
+const CRATES_TOP_PACKAGES_JSON: &str =
+    include_str!("../../data/popular-packages/crates-top1000.json");
+
+/// Loads the bundled npm, PyPI and crates.io popular-package lists and returns
+/// them as a single combined list.
 ///
-/// npm entries come first, in file order, followed by PyPI entries in file
-/// order. Names are returned as-is; no normalisation or de-duplication is
+/// npm entries come first, in file order, followed by PyPI entries and then
+/// crates.io entries, each in file order. Names are returned as-is; no normalisation or de-duplication is
 /// applied — that belongs with the (not-yet-written) scoring logic.
 pub fn load_popular_packages() -> Vec<String> {
     let mut combined = parse_string_array(NPM_TOP_PACKAGES_JSON);
     combined.extend(parse_string_array(PYPI_TOP_PACKAGES_JSON));
+    combined.extend(parse_string_array(CRATES_TOP_PACKAGES_JSON));
     combined
 }
 
@@ -96,5 +102,13 @@ mod tests {
             packages.iter().any(|name| name == "requests"),
             "expected PyPI package 'requests' in the combined list"
         );
+
+        // The two most-imitated crates.
+        for name in ["serde", "tokio"] {
+            assert!(
+                packages.iter().any(|p| p == name),
+                "expected crate '{name}' in the combined list"
+            );
+        }
     }
 }

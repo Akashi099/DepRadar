@@ -319,3 +319,20 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** ALLEN-AYODEJI
 - **Closes:** N/A
 - **Status:** Merged.
+
+### typosquat scanner — crates.io popular-package dataset
+
+- **What:** Adds `data/popular-packages/crates-top1000.json`, the top 1000
+  crates by recent (90-day) downloads from the crates.io API, taken on
+  2026-10-16, lowercased and sorted. `load_popular_packages()` now includes
+  it after the npm and PyPI lists, so Rust lookalikes (`serde_json`
+  imitations, `tokio` lookalikes) are scored like everything else. A new
+  `data/popular-packages/README.md` records each file's source and snapshot
+  date. The ecosystem-aware API (#24) doesn't exist yet. The existing
+  `Ecosystem::CratesIo` variant in `cve::osv_client` is there for it to map
+  onto this file.
+- **Tests:** the loader test now also asserts `serde` and `tokio` are
+  present.
+- **By:** Austinaminu2
+- **Closes:** #39
+- **Status:** In review.
