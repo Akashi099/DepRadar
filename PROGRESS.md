@@ -360,3 +360,29 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** Austinaminu2
 - **Closes:** #41
 - **Status:** In review.
+
+### typosquat scanner — dataset regeneration script
+
+- **What:** Adds `scripts/update-datasets.py`, a standard-library-only
+  Python script that rebuilds `data/popular-packages/*-top1000.json` from
+  public download stats.
+  - Sources: [`npm-high-impact`](https://github.com/wooorm/npm-high-impact)
+    for npm, [Top PyPI Packages](https://hugovk.dev/top-pypi-packages/) for
+    PyPI, and the crates.io API sorted by recent downloads.
+  - For each registry it keeps the top 1000 valid, distinct names (PEP 503
+    normalised for PyPI) and writes them lowercased and sorted, in the
+    existing two-space JSON format.
+  - It only rewrites a file whose content changed, so a second run leaves no
+    diff.
+  - `data/popular-packages/README.md` documents the sources, how to run the
+    script, and the caveats.
+  - The dataset validation test now covers `crates-top1000.json` as well.
+- **Data:** regenerated the npm and PyPI lists on 2026-10-16, replacing the
+  hand-curated snapshots (808 npm and 526 PyPI names changed). The crates.io
+  list, from #39, came out unchanged. Ranking npm by downloads favours
+  transitive dependencies, so `vue` and `@angular/core` drop out of the top
+  1000. `react`, `express`, `lodash`, `axios`, `requests`, `django`,
+  `serde` and `tokio` all remain.
+- **By:** Austinaminu2
+- **Closes:** #40
+- **Status:** In review. Builds on #39 and #41.

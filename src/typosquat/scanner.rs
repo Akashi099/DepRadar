@@ -103,8 +103,8 @@ mod tests {
     #[test]
     fn unrelated_name_is_not_flagged() {
         // Long and distinctive enough that its nearest dataset neighbour is
-        // far past the threshold (verified: distance 26 to the closest npm
-        // entry).
+        // far past the threshold (verified: distance 24 to the closest
+        // entry, npm's `define-data-property`).
         let result = score_package("definitely-not-a-real-package-zzz123");
         assert_eq!(result.distance_match, None);
         assert_eq!(result.homoglyph_match, None);
