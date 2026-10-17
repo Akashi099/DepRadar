@@ -384,3 +384,27 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** Maki
 - **Closes:** #37
 - **Status:** In review.
+
+### CLI — SARIF output for GitHub code scanning
+
+- **What:** Adds the `depradar` binary (`src/bin/depradar.rs`) with
+  `--format text|sarif`, `--output <FILE>` and `--offline` (skip the OSV
+  lookup). `--format sarif` writes a SARIF 2.1.0 log via the new
+  `src/report/sarif.rs`: one rule per `FindingKind` (`typosquat`,
+  `vulnerability`), one result per finding, each located at the scanned
+  lockfile on the first line that names the package, with a stable
+  `partialFingerprints` entry so GitHub can track alerts across runs.
+  Severity maps to the SARIF `level` (critical/high → `error`, medium →
+  `warning`, low → `note`) and to `security-severity`. A new
+  `src/report/mod.rs` gives every finding a severity: a homoglyph typosquat
+  is critical, an edit-distance typosquat high, and a vulnerability takes its
+  OSV advisory's level (`cve::severity::assess`), defaulting to high when the
+  advisory is unrated.
+- **Tests:** `tests/sarif.rs` validates the output against the official
+  SARIF 2.1.0 JSON schema (vendored at
+  `tests/fixtures/sarif-schema-2.1.0.json`) with the `jsonschema` crate, and
+  checks the rule list, one result per finding, levels and locations. Unit
+  tests cover the severity rules, level mapping and line lookup.
+- **By:** OZILSOLAR
+- **Closes:** #78
+- **Status:** In review.

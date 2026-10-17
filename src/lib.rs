@@ -7,11 +7,13 @@
 //! [`pipeline::scan_lockfile`] is the end-to-end entry point: it parses a
 //! project lockfile ([`lockfile`]) and runs the typosquat ([`typosquat`]) and
 //! known-vulnerability ([`cve`]) checks over every dependency in it, minus
-//! anything accepted in a `.depradarignore` file ([`ignore`]).
+//! anything accepted in a `.depradarignore` file ([`ignore`]). [`report`]
+//! rates each finding's severity and renders the result, e.g. as SARIF.
 
 pub mod cve;
 pub mod lockfile;
 pub mod model;
+pub mod report;
 pub mod typosquat;
 
 pub use pipeline::{scan_lockfile, Report, ScanOptions};

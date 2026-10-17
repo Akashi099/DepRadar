@@ -26,6 +26,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1.8"
 
+[dev-dependencies]
+jsonschema = { version = "0.26", default-features = false }
+
 [profile.release]
 opt-level = "z"
 overflow-checks = true
