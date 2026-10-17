@@ -4,14 +4,16 @@
 //! severity, and the label can be colored: critical and high in red,
 //! medium in yellow, low dimmed. [`use_color`] decides whether to color,
 //! honouring [`NO_COLOR`](https://no-color.org) and whether stdout is a
-//! terminal.
+//! terminal. [`Verbosity`] trims the output to the findings and summary
+//! line (`--quiet`) or adds every dependency checked and the time each scan
+//! stage took (`--verbose`).
 
 use std::fmt::Write;
 
 use owo_colors::OwoColorize;
 
 use super::{label, severity_of, AdvisorySeverities, Severity};
-use crate::pipeline::Report;
+use crate::pipeline::{Report, StageTiming};
 
 /// The `--color` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -36,10 +38,22 @@ pub fn use_color(choice: ColorChoice, no_color: Option<&str>, is_terminal: bool)
     }
 }
 
+/// How much detail to print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Verbosity {
+    /// Only the findings and the summary line.
+    Quiet,
+    #[default]
+    Normal,
+    /// Also every dependency checked and the time per scan stage.
+    Verbose,
+}
+
 /// How to render a report as text.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TextOptions {
     pub color: bool,
+    pub verbosity: Verbosity,
 }
 
 /// `[HIGH]`-style severity tag, colored if asked.
@@ -70,6 +84,15 @@ fn write_report(
     advisories: &AdvisorySeverities,
     opts: &TextOptions,
 ) -> std::fmt::Result {
+    if opts.verbosity == Verbosity::Quiet {
+        for finding in &report.findings {
+            let severity = severity_of(finding, advisories);
+            writeln!(out, "{} {finding}", tag(severity, opts.color))?;
+        }
+        return writeln!(out, "{}", summary_line(report));
+    }
+    let verbose = opts.verbosity == Verbosity::Verbose;
+
     writeln!(
         out,
         "Scanned {} ({} packages, {} pinned versions checked for known vulnerabilities)",
@@ -77,6 +100,18 @@ fn write_report(
         report.summary.packages,
         report.summary.queried
     )?;
+
+    if verbose {
+        writeln!(out, "\nDependencies checked ({}):", report.dependencies.len())?;
+        for dependency in &report.dependencies {
+            write!(out, "  - {}", dependency.name)?;
+            if let Some(version) = &dependency.version {
+                write!(out, "@{version}")?;
+            }
+            let scope = if dependency.direct { "direct" } else { "transitive" };
+            writeln!(out, " [{scope}]")?;
+        }
+    }
 
     if report.findings.is_empty() {
         writeln!(out, "\nNo findings.")?;
@@ -106,6 +141,15 @@ fn write_report(
         }
     }
 
+    if verbose && !report.timings.is_empty() {
+        writeln!(out, "\nTimings:")?;
+        for timing in &report.timings {
+            writeln!(out, "  - {}", format_timing(timing))?;
+        }
+        let total: std::time::Duration = report.timings.iter().map(|t| t.elapsed).sum();
+        writeln!(out, "  - total: {}", format_duration(total))?;
+    }
+
     writeln!(out, "\n{}", summary_line(report))
 }
 
@@ -118,6 +162,14 @@ pub fn summary_line(report: &Report) -> String {
         report.summary.suppressed,
         report.summary.warnings
     )
+}
+
+fn format_timing(timing: &StageTiming) -> String {
+    format!("{}: {}", timing.stage, format_duration(timing.elapsed))
+}
+
+fn format_duration(elapsed: std::time::Duration) -> String {
+    format!("{:.1} ms", elapsed.as_secs_f64() * 1000.0)
 }
 
 #[cfg(test)]
@@ -150,5 +202,14 @@ mod tests {
         assert_eq!(tag(Severity::Low, false), "[LOW]");
         assert!(tag(Severity::High, true).contains('\u{1b}'));
         assert!(tag(Severity::Medium, true).contains("[MEDIUM]"));
+    }
+
+    #[test]
+    fn formats_stage_timings_in_milliseconds() {
+        let timing = StageTiming {
+            stage: "parse",
+            elapsed: std::time::Duration::from_micros(1_240),
+        };
+        assert_eq!(format_timing(&timing), "parse: 1.2 ms");
     }
 }

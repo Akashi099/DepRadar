@@ -425,3 +425,22 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** OZILSOLAR
 - **Closes:** #79
 - **Status:** In review.
+
+### CLI — `--quiet` and `--verbose`
+
+- **What:** `depradar -q/--quiet` prints only the findings (one line each,
+  with their severity tag) and the closing summary line, for terse CI logs.
+  `-v/--verbose` adds a "Dependencies checked" section listing every
+  distinct package and version scanned (direct or transitive) and a
+  "Timings" section with the wall-clock time of each stage (`parse`,
+  `typosquat`, `advisories`, `ignore`, plus the CLI's `severity` lookup) and
+  the total. Passing both is a usage error (exit 2). To support this,
+  `pipeline::Report` now carries `dependencies` and `timings`
+  (`Vec<StageTiming>`), filled in by `scan_lockfile`.
+- **Tests:** `assert_cmd` tests in `tests/cli.rs` for quiet output (exactly
+  the finding and summary lines), verbose output (every fixture dependency
+  and the stage timings are listed), and the quiet+verbose conflict. A unit
+  test covers timing formatting.
+- **By:** OZILSOLAR
+- **Closes:** #80
+- **Status:** In review.

@@ -54,3 +54,48 @@ fn piped_output_is_uncolored_by_default() {
     assert!(out.contains("[HIGH] expresss"), "{out}");
     assert!(!out.contains('\u{1b}'), "ANSI escape in output: {out:?}");
 }
+
+#[test]
+fn quiet_prints_only_findings_and_the_summary_line() {
+    let out = stdout(
+        depradar()
+            .args(["--offline", "--quiet"])
+            .arg(fixture("npm-basic/package-lock.json")),
+    );
+
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    assert!(lines[0].starts_with("[HIGH] expresss@1.0.0"), "{out}");
+    assert!(lines[1].starts_with("Summary: 1 typosquat(s)"), "{out}");
+    assert!(!out.contains("Scanned "), "{out}");
+    assert!(!out.contains("Warnings"), "{out}");
+}
+
+#[test]
+fn verbose_lists_dependencies_and_stage_timings() {
+    let out = stdout(
+        depradar()
+            .args(["--offline", "--verbose"])
+            .arg(fixture("npm-basic/package-lock.json")),
+    );
+
+    assert!(out.contains("Dependencies checked (4):"), "{out}");
+    for dependency in ["express@4.21.2", "expresss@1.0.0", "lodash@4.17.4"] {
+        assert!(out.contains(&format!("  - {dependency} [")), "{dependency}: {out}");
+    }
+    assert!(out.contains("  - zzz-unversioned-internal-fixture ["), "{out}");
+    assert!(out.contains("Timings:"), "{out}");
+    assert!(out.contains("  - parse: "), "{out}");
+    assert!(out.contains("  - typosquat: "), "{out}");
+    assert!(out.contains("  - total: "), "{out}");
+    assert!(out.contains("Summary: "), "{out}");
+}
+
+#[test]
+fn quiet_and_verbose_together_is_a_usage_error() {
+    depradar()
+        .args(["--offline", "--quiet", "--verbose"])
+        .arg(fixture("npm-basic/package-lock.json"))
+        .assert()
+        .code(2);
+}

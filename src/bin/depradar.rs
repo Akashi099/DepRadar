@@ -8,11 +8,12 @@ use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use deprader::ignore::{IgnoreFile, IGNORE_FILE_NAME};
-use deprader::pipeline::{scan_lockfile, ScanOptions};
+use deprader::pipeline::{scan_lockfile, ScanOptions, StageTiming};
 use deprader::report::sarif::to_sarif;
-use deprader::report::text::{render, use_color, ColorChoice, TextOptions};
+use deprader::report::text::{render, use_color, ColorChoice, TextOptions, Verbosity};
 use deprader::report::AdvisorySeverities;
 
 const HELP: &str = "\
@@ -27,11 +28,14 @@ Options:
   -f, --format <FORMAT>  Output format: text or sarif [default: text]
   -o, --output <FILE>    Write the report to FILE instead of stdout
       --color <WHEN>     Color severity labels: auto, always or never [default: auto]
+  -q, --quiet            Print only the findings and the summary line
+  -v, --verbose          Also list every dependency checked and the time per stage
       --offline          Skip the OSV vulnerability lookup (typosquat checks only)
   -h, --help             Print this help
 
 Color is off when stdout isn't a terminal (with --color auto) and whenever
-the NO_COLOR environment variable is set to a non-empty value.
+the NO_COLOR environment variable is set to a non-empty value. --quiet and
+--verbose only affect text output.
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +50,7 @@ struct Args {
     format: Format,
     output: Option<PathBuf>,
     color: ColorChoice,
+    verbosity: Verbosity,
     offline: bool,
 }
 
@@ -60,6 +65,8 @@ fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let mut format = Format::Text;
     let mut output = None;
     let mut color = ColorChoice::Auto;
+    let mut quiet = false;
+    let mut verbose = false;
     let mut offline = false;
 
     let mut raw = raw.into_iter();
@@ -100,6 +107,8 @@ fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Command, String> 
                     }
                 }
             }
+            "-q" | "--quiet" => quiet = true,
+            "-v" | "--verbose" => verbose = true,
             "--offline" => offline = true,
             _ if flag.starts_with('-') && flag != "-" => {
                 return Err(format!("unknown option `{flag}`"))
@@ -110,11 +119,18 @@ fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Command, String> 
     }
 
     let lockfile = lockfile.ok_or("missing <LOCKFILE>")?;
+    let verbosity = match (quiet, verbose) {
+        (true, true) => return Err("--quiet and --verbose can't be used together".to_string()),
+        (true, false) => Verbosity::Quiet,
+        (false, true) => Verbosity::Verbose,
+        (false, false) => Verbosity::Normal,
+    };
     Ok(Command::Scan(Args {
         lockfile,
         format,
         output,
         color,
+        verbosity,
         offline,
     }))
 }
@@ -159,9 +175,14 @@ fn run(args: &Args) -> Result<bool, String> {
     let advisories = if args.offline {
         AdvisorySeverities::default()
     } else {
+        let started = Instant::now();
         let (advisories, warnings) = AdvisorySeverities::fetch(&report.findings);
         report.summary.warnings += warnings.len();
         report.warnings.extend(warnings);
+        report.timings.push(StageTiming {
+            stage: "severity",
+            elapsed: started.elapsed(),
+        });
         advisories
     };
 
@@ -173,6 +194,7 @@ fn run(args: &Args) -> Result<bool, String> {
             let no_color = env::var("NO_COLOR").ok();
             let opts = TextOptions {
                 color: use_color(args.color, no_color.as_deref(), is_terminal),
+                verbosity: args.verbosity,
             };
             render(&report, &advisories, &opts)
         }

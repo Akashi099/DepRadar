@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::cve::osv_client::{query_osv_batch, OsvBatchQuery};
 use crate::ignore::{Date, IgnoreFile, Suppressed};
@@ -79,6 +80,14 @@ pub struct Summary {
     pub warnings: usize,
 }
 
+/// How long one stage of a scan took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageTiming {
+    /// Short stage name, e.g. `parse` or `advisories`.
+    pub stage: &'static str,
+    pub elapsed: Duration,
+}
+
 /// The outcome of scanning one lockfile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -93,6 +102,12 @@ pub struct Report {
     /// not findings: they mean part of the scan may not be what you expect.
     pub warnings: Vec<String>,
     pub summary: Summary,
+    /// Every distinct `(name, version)` pair that was checked, in lockfile
+    /// order.
+    pub dependencies: Vec<Dependency>,
+    /// Wall-clock time of each stage that ran, in order. Callers that do
+    /// more work on the report (such as the CLI) may append their own.
+    pub timings: Vec<StageTiming>,
 }
 
 impl Report {
@@ -188,8 +203,20 @@ pub fn scan_lockfile(
     opts: &ScanOptions<'_>,
 ) -> Result<Report, ScanError> {
     let path = path.as_ref();
+    let mut timings = Vec::new();
+    let mut stage_start = Instant::now();
+    let mut finish_stage = |stage: &'static str| {
+        let now = Instant::now();
+        timings.push(StageTiming {
+            stage,
+            elapsed: now - stage_start,
+        });
+        stage_start = now;
+    };
+
     let parsed = parse_lockfile(path).map_err(ScanError::Lockfile)?;
     let packages = dedupe(parsed.dependencies);
+    finish_stage("parse");
 
     let mut findings = Vec::new();
 
@@ -209,6 +236,7 @@ pub fn scan_lockfile(
                 ));
             }
         }
+        finish_stage("typosquat");
     }
 
     let mut queried = 0;
@@ -238,6 +266,7 @@ pub fn scan_lockfile(
                 }
             }
         }
+        finish_stage("advisories");
     }
 
     let mut warnings = parsed.warnings;
@@ -247,6 +276,7 @@ pub fn scan_lockfile(
         findings = applied.kept;
         suppressed = applied.suppressed;
         warnings.extend(applied.warnings);
+        finish_stage("ignore");
     }
 
     let count = |is_kind: fn(&FindingKind) -> bool| {
@@ -268,6 +298,8 @@ pub fn scan_lockfile(
         suppressed,
         warnings,
         summary,
+        dependencies: packages,
+        timings,
     })
 }
 
