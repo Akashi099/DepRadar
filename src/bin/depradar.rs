@@ -14,7 +14,7 @@ use deprader::ignore::{IgnoreFile, IGNORE_FILE_NAME};
 use deprader::pipeline::{scan_lockfile, ScanOptions, StageTiming};
 use deprader::report::sarif::to_sarif;
 use deprader::report::text::{render, use_color, ColorChoice, TextOptions, Verbosity};
-use deprader::report::AdvisorySeverities;
+use deprader::report::{severity_of, AdvisorySeverities, Severity};
 
 const HELP: &str = "\
 depradar — scan a lockfile for typosquats and known vulnerabilities
@@ -30,18 +30,54 @@ Options:
       --color <WHEN>     Color severity labels: auto, always or never [default: auto]
   -q, --quiet            Print only the findings and the summary line
   -v, --verbose          Also list every dependency checked and the time per stage
+      --fail-on <LEVEL>  Exit 1 if any finding is at or above LEVEL: low, medium,
+                         high, critical or none (never fail) [default: high]
       --offline          Skip the OSV vulnerability lookup (typosquat checks only)
   -h, --help             Print this help
 
 Color is off when stdout isn't a terminal (with --color auto) and whenever
 the NO_COLOR environment variable is set to a non-empty value. --quiet and
 --verbose only affect text output.
+
+Exit codes:
+  0  No findings at or above the --fail-on level (suppressed findings never count)
+  1  At least one finding at or above the --fail-on level
+  2  Usage error, or the scan couldn't complete (unreadable or malformed
+     lockfile or .depradarignore, failed OSV lookup)
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
     Text,
     Sarif,
+}
+
+/// The `--fail-on` threshold: findings at or above it fail the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailOn {
+    AtLeast(Severity),
+    Never,
+}
+
+impl FailOn {
+    fn parse(value: &str) -> Option<FailOn> {
+        let level = match value.to_ascii_lowercase().as_str() {
+            "low" => Severity::Low,
+            "medium" => Severity::Medium,
+            "high" => Severity::High,
+            "critical" => Severity::Critical,
+            "none" => return Some(FailOn::Never),
+            _ => return None,
+        };
+        Some(FailOn::AtLeast(level))
+    }
+
+    fn fails(self, severity: Severity) -> bool {
+        match self {
+            FailOn::AtLeast(threshold) => severity >= threshold,
+            FailOn::Never => false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -51,6 +87,7 @@ struct Args {
     output: Option<PathBuf>,
     color: ColorChoice,
     verbosity: Verbosity,
+    fail_on: FailOn,
     offline: bool,
 }
 
@@ -67,6 +104,7 @@ fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let mut color = ColorChoice::Auto;
     let mut quiet = false;
     let mut verbose = false;
+    let mut fail_on = FailOn::AtLeast(Severity::High);
     let mut offline = false;
 
     let mut raw = raw.into_iter();
@@ -109,6 +147,15 @@ fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Command, String> 
             }
             "-q" | "--quiet" => quiet = true,
             "-v" | "--verbose" => verbose = true,
+            "--fail-on" => {
+                let level = value("--fail-on")?;
+                fail_on = FailOn::parse(&level).ok_or_else(|| {
+                    format!(
+                        "unknown --fail-on level `{level}` \
+                         (expected low, medium, high, critical or none)"
+                    )
+                })?;
+            }
             "--offline" => offline = true,
             _ if flag.starts_with('-') && flag != "-" => {
                 return Err(format!("unknown option `{flag}`"))
@@ -131,6 +178,7 @@ fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Command, String> 
         output,
         color,
         verbosity,
+        fail_on,
         offline,
     }))
 }
@@ -149,8 +197,8 @@ fn main() -> ExitCode {
     };
 
     match run(&args) {
-        Ok(true) => ExitCode::FAILURE,
-        Ok(false) => ExitCode::SUCCESS,
+        Ok(Outcome::Clean) => ExitCode::SUCCESS,
+        Ok(Outcome::Failed) => ExitCode::FAILURE,
         Err(message) => {
             eprintln!("error: {message}");
             ExitCode::from(2)
@@ -158,8 +206,16 @@ fn main() -> ExitCode {
     }
 }
 
-/// Scans and writes the report. Returns whether there were findings.
-fn run(args: &Args) -> Result<bool, String> {
+/// Whether the scan passed the `--fail-on` gate.
+enum Outcome {
+    /// No finding at or above the threshold (exit 0).
+    Clean,
+    /// At least one finding at or above the threshold (exit 1).
+    Failed,
+}
+
+/// Scans, writes the report, and judges the findings against `--fail-on`.
+fn run(args: &Args) -> Result<Outcome, String> {
     let ignore = load_ignore(&args.lockfile)?;
     let opts = ScanOptions {
         ignore: ignore.as_ref(),
@@ -212,7 +268,16 @@ fn run(args: &Args) -> Result<bool, String> {
             .map_err(|err| format!("couldn't write {}: {err}", path.display()))?,
         None => print!("{rendered}"),
     }
-    Ok(report.has_findings())
+
+    let failed = report
+        .findings
+        .iter()
+        .any(|finding| args.fail_on.fails(severity_of(finding, &advisories)));
+    Ok(if failed {
+        Outcome::Failed
+    } else {
+        Outcome::Clean
+    })
 }
 
 /// Loads the `.depradarignore` next to the lockfile, if there is one.

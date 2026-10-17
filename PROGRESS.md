@@ -444,3 +444,24 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** OZILSOLAR
 - **Closes:** #80
 - **Status:** In review.
+
+### CLI — fail the build above a severity threshold (`--fail-on`)
+
+- **What:** `depradar --fail-on low|medium|high|critical|none` (default
+  `high`) makes the CLI usable as a CI gate: the run fails only if an
+  unsuppressed finding is at or above the chosen severity, and `none` never
+  fails on findings. Exit codes: `0` clean, `1` findings at or above the
+  threshold, `2` usage error or a scan that couldn't complete (unreadable or
+  malformed lockfile or `.depradarignore`, failed OSV lookup). The codes are
+  documented in `depradar --help` and in a new "Scanning a lockfile (CLI)"
+  section of the README, which also covers the other CLI options and a
+  GitHub Actions example that uploads the SARIF report.
+- **Tests:** `assert_cmd` tests in `tests/cli.rs` for each exit code: `0`
+  on a new clean fixture (`tests/fixtures/npm-clean/`), `1` under the
+  default threshold, every `--fail-on` level against a high-severity
+  finding, `2` for missing arguments, an unknown level, an unknown flag, a
+  missing lockfile and an unsupported file, plus a check that `--help`
+  lists the exit codes.
+- **By:** OZILSOLAR
+- **Closes:** #81
+- **Status:** In review.

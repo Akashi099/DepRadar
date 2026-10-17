@@ -99,3 +99,85 @@ fn quiet_and_verbose_together_is_a_usage_error() {
         .assert()
         .code(2);
 }
+
+#[test]
+fn exit_0_when_the_scan_is_clean() {
+    depradar()
+        .arg("--offline")
+        .arg(fixture("npm-clean/package-lock.json"))
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn exit_1_when_a_finding_meets_the_default_high_threshold() {
+    depradar()
+        .arg("--offline")
+        .arg(fixture("npm-basic/package-lock.json"))
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn fail_on_compares_against_the_finding_severity() {
+    let lockfile = fixture("npm-basic/package-lock.json");
+    // The only finding is a high-severity typosquat.
+    for (level, code) in [
+        ("low", 1),
+        ("medium", 1),
+        ("high", 1),
+        ("critical", 0),
+        ("none", 0),
+    ] {
+        depradar()
+            .args(["--offline", "--fail-on", level])
+            .arg(&lockfile)
+            .assert()
+            .code(code);
+    }
+    depradar()
+        .args(["--offline", "--fail-on=critical"])
+        .arg(&lockfile)
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn exit_2_on_usage_errors() {
+    let lockfile = fixture("npm-basic/package-lock.json");
+    depradar().assert().code(2);
+    depradar()
+        .args(["--offline", "--fail-on", "severe"])
+        .arg(&lockfile)
+        .assert()
+        .code(2);
+    depradar()
+        .args(["--offline", "--no-such-flag"])
+        .arg(&lockfile)
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn exit_2_when_the_lockfile_cant_be_parsed() {
+    depradar()
+        .arg("--offline")
+        .arg(fixture("does-not-exist/package-lock.json"))
+        .assert()
+        .code(2);
+    depradar()
+        .arg("--offline")
+        .arg(fixture("sarif-schema-2.1.0.json"))
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn help_documents_the_exit_codes() {
+    let out = stdout(depradar().arg("--help"));
+    assert!(out.contains("--fail-on <LEVEL>"), "{out}");
+    assert!(out.contains("Exit codes:"), "{out}");
+    for code in ["  0  ", "  1  ", "  2  "] {
+        assert!(out.contains(code), "missing exit code line {code:?}: {out}");
+    }
+}
