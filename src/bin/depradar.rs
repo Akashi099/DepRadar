@@ -5,12 +5,14 @@
 
 use std::env;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use deprader::ignore::{IgnoreFile, IGNORE_FILE_NAME};
 use deprader::pipeline::{scan_lockfile, ScanOptions};
 use deprader::report::sarif::to_sarif;
+use deprader::report::text::{render, use_color, ColorChoice, TextOptions};
 use deprader::report::AdvisorySeverities;
 
 const HELP: &str = "\
@@ -24,8 +26,12 @@ Arguments:
 Options:
   -f, --format <FORMAT>  Output format: text or sarif [default: text]
   -o, --output <FILE>    Write the report to FILE instead of stdout
+      --color <WHEN>     Color severity labels: auto, always or never [default: auto]
       --offline          Skip the OSV vulnerability lookup (typosquat checks only)
   -h, --help             Print this help
+
+Color is off when stdout isn't a terminal (with --color auto) and whenever
+the NO_COLOR environment variable is set to a non-empty value.
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +45,7 @@ struct Args {
     lockfile: PathBuf,
     format: Format,
     output: Option<PathBuf>,
+    color: ColorChoice,
     offline: bool,
 }
 
@@ -52,6 +59,7 @@ fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let mut lockfile = None;
     let mut format = Format::Text;
     let mut output = None;
+    let mut color = ColorChoice::Auto;
     let mut offline = false;
 
     let mut raw = raw.into_iter();
@@ -80,6 +88,18 @@ fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Command, String> 
                 }
             }
             "-o" | "--output" => output = Some(PathBuf::from(value("--output")?)),
+            "--color" => {
+                color = match value("--color")?.as_str() {
+                    "auto" => ColorChoice::Auto,
+                    "always" => ColorChoice::Always,
+                    "never" => ColorChoice::Never,
+                    other => {
+                        return Err(format!(
+                            "unknown --color value `{other}` (expected auto, always or never)"
+                        ))
+                    }
+                }
+            }
             "--offline" => offline = true,
             _ if flag.starts_with('-') && flag != "-" => {
                 return Err(format!("unknown option `{flag}`"))
@@ -94,6 +114,7 @@ fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Command, String> 
         lockfile,
         format,
         output,
+        color,
         offline,
     }))
 }
@@ -145,7 +166,16 @@ fn run(args: &Args) -> Result<bool, String> {
     };
 
     let rendered = match args.format {
-        Format::Text => format!("{report}\n"),
+        Format::Text => {
+            // Files never get color unless asked for; `use_color` treats them
+            // like a pipe.
+            let is_terminal = args.output.is_none() && std::io::stdout().is_terminal();
+            let no_color = env::var("NO_COLOR").ok();
+            let opts = TextOptions {
+                color: use_color(args.color, no_color.as_deref(), is_terminal),
+            };
+            render(&report, &advisories, &opts)
+        }
         Format::Sarif => {
             let contents = fs::read_to_string(&args.lockfile).ok();
             let sarif = to_sarif(&report, &advisories, contents.as_deref());

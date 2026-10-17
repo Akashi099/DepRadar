@@ -408,3 +408,20 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** OZILSOLAR
 - **Closes:** #78
 - **Status:** In review.
+
+### CLI — colored, severity-aware terminal output
+
+- **What:** Adds `src/report/text.rs`, the text renderer the `depradar` CLI
+  now uses: each finding is prefixed with its severity tag, colored with
+  `owo-colors` — `[CRITICAL]` bold red, `[HIGH]` red, `[MEDIUM]` yellow,
+  `[LOW]` dimmed. New `--color auto|always|never` flag (default `auto`:
+  color only when stdout is a terminal; reports written with `--output` are
+  never colored under `auto`). A non-empty `NO_COLOR` environment variable
+  turns color off regardless of `--color`, per <https://no-color.org>.
+- **Tests:** `tests/cli.rs` (`assert_cmd`) asserts that no ANSI escape codes
+  appear with `NO_COLOR=1` even under `--color always`, that `--color
+  always` does emit them, and that piped output is uncolored by default.
+  Unit tests cover the color decision and the plain/colored tags.
+- **By:** OZILSOLAR
+- **Closes:** #79
+- **Status:** In review.

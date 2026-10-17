@@ -6,6 +6,7 @@
 //! signal fired.
 //!
 //! - [`sarif`] — SARIF 2.1.0, for GitHub code scanning
+//! - [`text`] — terminal output with color-coded severity labels
 
 use std::collections::HashMap;
 
@@ -16,6 +17,7 @@ use crate::cve::severity::assess;
 use crate::model::{Finding, FindingKind};
 
 pub mod sarif;
+pub mod text;
 
 /// Level given to a vulnerability whose advisory has no usable severity
 /// data, or couldn't be fetched. Erring high keeps unrated advisories from
