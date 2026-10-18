@@ -5,6 +5,7 @@
 //! known vulnerabilities affecting it. No filtering or scoring yet — that
 //! belongs with the (not-yet-written) CVE scanner module.
 
+pub mod cache;
 pub mod osv_client;
 pub mod remediation;
 pub mod severity;

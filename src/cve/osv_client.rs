@@ -7,6 +7,8 @@
 //! just fetch-and-parse into typed structs. Turning the raw matches into
 //! scored findings belongs with the (not-yet-written) CVE scanner module.
 
+use std::time::{Duration, SystemTime};
+
 use serde::{Deserialize, Serialize};
 
 const OSV_QUERY_URL: &str = "https://api.osv.dev/v1/query";
@@ -24,16 +26,24 @@ pub enum Ecosystem {
     Npm,
     PyPI,
     CratesIo,
+    Go,
+    Maven,
+    RubyGems,
+    Packagist,
 }
 
 impl Ecosystem {
     /// The ecosystem name OSV expects in a query, exactly as documented at
     /// <https://ossf.github.io/osv-schema/#affectedpackage-field>.
-    fn as_osv_str(self) -> &'static str {
+    pub(crate) fn as_osv_str(self) -> &'static str {
         match self {
             Ecosystem::Npm => "npm",
             Ecosystem::PyPI => "PyPI",
             Ecosystem::CratesIo => "crates.io",
+            Ecosystem::Go => "Go",
+            Ecosystem::Maven => "Maven",
+            Ecosystem::RubyGems => "RubyGems",
+            Ecosystem::Packagist => "Packagist",
         }
     }
 }
@@ -91,7 +101,7 @@ pub struct OsvVulnerabilityRef {
 }
 
 /// The package identity as OSV echoes it back inside an `affected` entry.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OsvPackage {
     pub name: String,
     pub ecosystem: String,
@@ -102,7 +112,7 @@ pub struct OsvPackage {
 /// One event in a version range: the point where a vulnerability was
 /// introduced, fixed, or last known to affect a version. Exactly one field
 /// is set per event, per the OSV schema.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OsvEvent {
     pub introduced: Option<String>,
     pub fixed: Option<String>,
@@ -112,7 +122,7 @@ pub struct OsvEvent {
 
 /// A version range (e.g. a SEMVER range) bounding which versions of a
 /// package are affected.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OsvRange {
     #[serde(rename = "type")]
     pub range_type: String,
@@ -123,7 +133,7 @@ pub struct OsvRange {
 /// One `affected` entry: a package (possibly a different name/ecosystem than
 /// the one queried, e.g. an alias package) plus the ranges and/or explicit
 /// version list that are affected.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OsvAffected {
     pub package: Option<OsvPackage>,
     #[serde(default)]
@@ -133,7 +143,7 @@ pub struct OsvAffected {
 }
 
 /// A severity score reported for a vulnerability, e.g. a CVSS vector string.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OsvSeverity {
     #[serde(rename = "type")]
     pub severity_type: String,
@@ -141,7 +151,7 @@ pub struct OsvSeverity {
 }
 
 /// A reference URL for a vulnerability (advisory, fix commit, report, etc).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OsvReference {
     #[serde(rename = "type")]
     pub reference_type: String,
@@ -153,7 +163,7 @@ pub struct OsvReference {
 /// This mirrors the subset of the [OSV schema](https://ossf.github.io/osv-schema/)
 /// that `POST /v1/query` populates. `database_specific` fields vary by
 /// source and aren't modeled here.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OsvVulnerability {
     pub id: String,
     pub summary: Option<String>,
@@ -174,7 +184,7 @@ pub struct OsvVulnerability {
 
 /// Response body of `POST /v1/query`: the list of vulnerabilities matching
 /// the queried package/version, if any.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OsvQueryResponse {
     #[serde(default)]
     pub vulns: Vec<OsvVulnerability>,
@@ -563,6 +573,138 @@ mod tests {
         assert_eq!(Ecosystem::Npm.as_osv_str(), "npm");
         assert_eq!(Ecosystem::PyPI.as_osv_str(), "PyPI");
         assert_eq!(Ecosystem::CratesIo.as_osv_str(), "crates.io");
+        assert_eq!(Ecosystem::Go.as_osv_str(), "Go");
+        assert_eq!(Ecosystem::Maven.as_osv_str(), "Maven");
+        assert_eq!(Ecosystem::RubyGems.as_osv_str(), "RubyGems");
+        assert_eq!(Ecosystem::Packagist.as_osv_str(), "Packagist");
+    }
+
+    const VULN_BODY: &str = r#"{"vulns":[{"id":"GHSA-test","aliases":["CVE-2020-0001"]}]}"#;
+
+    fn client(server: &mockito::Server) -> OsvClient {
+        OsvClient::with_base_url(&server.url()).with_backoff(Duration::from_millis(1))
+    }
+
+    #[test]
+    fn success_parses_vulns() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/v1/query")
+            .with_body(VULN_BODY)
+            .create();
+        let response = client(&server).query("x", Ecosystem::Npm, "1.0.0").unwrap();
+        assert_eq!(response.vulns[0].id, "GHSA-test");
+        mock.assert();
+    }
+
+    #[test]
+    fn empty_object_means_no_vulns() {
+        let mut server = mockito::Server::new();
+        server.mock("POST", "/v1/query").with_body("{}").create();
+        let response = client(&server).query("x", Ecosystem::Npm, "1.0.0").unwrap();
+        assert!(response.vulns.is_empty());
+    }
+
+    #[test]
+    fn malformed_json_is_decode_error() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("POST", "/v1/query")
+            .with_body("not json")
+            .create();
+        let err = client(&server)
+            .query("x", Ecosystem::Npm, "1.0.0")
+            .unwrap_err();
+        assert!(matches!(err, OsvClientError::Decode(_)));
+    }
+
+    #[test]
+    fn unreachable_server_is_request_error() {
+        let err = OsvClient::with_base_url("http://127.0.0.1:1")
+            .query("x", Ecosystem::Npm, "1.0.0")
+            .unwrap_err();
+        assert!(matches!(err, OsvClientError::Request(_)));
+    }
+
+    #[test]
+    fn persistent_429_and_500_are_unexpected_status_after_retries() {
+        for status in [429u16, 500] {
+            let mut server = mockito::Server::new();
+            let mock = server
+                .mock("POST", "/v1/query")
+                .with_status(status as usize)
+                .expect(1 + MAX_RETRIES as usize)
+                .create();
+            let err = client(&server)
+                .query("x", Ecosystem::Npm, "1.0.0")
+                .unwrap_err();
+            assert!(matches!(err, OsvClientError::UnexpectedStatus(s) if s.as_u16() == status));
+            mock.assert();
+        }
+    }
+
+    #[test]
+    fn retries_503_then_succeeds() {
+        let mut server = mockito::Server::new();
+        let fail = server
+            .mock("POST", "/v1/query")
+            .with_status(503)
+            .expect(1)
+            .create();
+        let ok = server
+            .mock("POST", "/v1/query")
+            .with_body(VULN_BODY)
+            .expect(1)
+            .create();
+        let response = client(&server).query("x", Ecosystem::Npm, "1.0.0").unwrap();
+        assert_eq!(response.vulns.len(), 1);
+        fail.assert();
+        ok.assert();
+    }
+
+    #[test]
+    fn does_not_retry_400() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/v1/query")
+            .with_status(400)
+            .expect(1)
+            .create();
+        let err = client(&server)
+            .query("x", Ecosystem::Npm, "1.0.0")
+            .unwrap_err();
+        assert!(matches!(err, OsvClientError::UnexpectedStatus(s) if s.as_u16() == 400));
+        mock.assert();
+    }
+
+    #[test]
+    fn cache_hit_skips_http_and_expired_entry_refetches() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/v1/query")
+            .with_body(VULN_BODY)
+            .expect(1)
+            .create();
+
+        let cached = client(&server).with_cache(OsvCache::new(
+            dir.path().to_path_buf(),
+            Duration::from_secs(3600),
+        ));
+        cached.query("x", Ecosystem::Npm, "1.0.0").unwrap();
+        let hit = cached.query("x", Ecosystem::Npm, "1.0.0").unwrap();
+        assert_eq!(hit.vulns[0].id, "GHSA-test");
+        mock.assert(); // still exactly one request
+
+        let expired =
+            client(&server).with_cache(OsvCache::new(dir.path().to_path_buf(), Duration::ZERO));
+        let refetch = server
+            .mock("POST", "/v1/query")
+            .with_body("{}")
+            .expect(1)
+            .create();
+        expired.query("x", Ecosystem::Npm, "1.0.0").unwrap();
+        refetch.assert();
     }
 
     /// Serves each canned `(status, body)` in order, one per connection,
