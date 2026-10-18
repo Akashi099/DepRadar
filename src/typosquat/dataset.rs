@@ -23,6 +23,7 @@ const PYPI_TOP_PACKAGES_JSON: &str = include_str!("../../data/popular-packages/p
 
 /// Raw JSON text of the allowlist of legitimate near-collisions, embedded at
 /// compile time.
+#[allow(dead_code)]
 const ALLOWLIST_JSON: &str = include_str!("../../data/allowlist.json");
 
 /// Loads the bundled npm and PyPI popular-package lists and returns them as a

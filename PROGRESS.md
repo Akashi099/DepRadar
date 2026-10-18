@@ -446,3 +446,16 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** soma-enyi
 - **Closes:** #65
 - **Status:** In review.
+
+### CLI — read package names from stdin
+
+- **What:** `depradar name -` now reads newline-separated package names from
+  stdin instead of scoring a package literally named `-`, so bulk checks can
+  be piped (`cat names.txt | depradar name -`). Blank lines and `#` comments
+  are skipped, and surrounding whitespace is trimmed. Text output prints one
+  result per name; `--format json` prints a single JSON array of results.
+- **Tests:** `assert_cmd` tests pipe three names (plus a comment and a blank
+  line) through `name -` in both text and JSON modes.
+- **By:** eeshasalaudeen734-creator
+- **Closes:** #82
+- **Status:** In review.

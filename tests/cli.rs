@@ -50,9 +50,12 @@ fn name_output_matches_the_legacy_scan_binary() {
 fn help_text_matches_snapshot() {
     let output = depradar().arg("--help").output().unwrap();
     assert!(output.status.success());
+    let actual = String::from_utf8_lossy(&output.stdout)
+        .replace("depradar.exe", "depradar")
+        .replace("\r\n", "\n");
+    let expected = include_str!("snapshots/depradar-help.txt").replace("\r\n", "\n");
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        include_str!("snapshots/depradar-help.txt"),
+        actual, expected,
         "help text changed; if that's intended, regenerate the snapshot with \
          `cargo run --bin depradar -- --help > tests/snapshots/depradar-help.txt`"
     );
@@ -130,4 +133,42 @@ fn scan_error_in_json_mode_still_prints_one_document() {
 fn missing_subcommand_is_a_usage_error() {
     let output = depradar().output().unwrap();
     assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn name_reads_newline_separated_names_from_stdin() {
+    let output = depradar()
+        .args(["name", "-"])
+        .write_stdin("expresss\n# a comment\n\nreact\nlodahs\n")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("expresss: likely typosquat"), "{stdout}");
+    assert!(
+        stdout.contains("react: no typosquat signal detected"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("lodahs:"), "{stdout}");
+    assert!(!stdout.contains("a comment"), "{stdout}");
+}
+
+#[test]
+fn name_stdin_json_is_one_array_document() {
+    let output = depradar()
+        .args(["--format", "json", "name", "-"])
+        .write_stdin("expresss\nreact\nlodahs\n")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    let results = json
+        .as_array()
+        .expect("stdin JSON output should be an array");
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0]["candidate"], "expresss");
+    assert_eq!(results[1]["candidate"], "react");
+    assert_eq!(results[2]["candidate"], "lodahs");
 }

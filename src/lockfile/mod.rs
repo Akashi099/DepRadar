@@ -66,6 +66,98 @@ pub fn detect(path: impl AsRef<Path>) -> Option<LockfileKind> {
     Some(kind)
 }
 
+/// The result of parsing one lockfile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedLockfile {
+    pub ecosystem: crate::model::Ecosystem,
+    pub dependencies: Vec<Dependency>,
+    /// Entries that were skipped or only partly understood.
+    pub warnings: Vec<String>,
+}
+
+/// Errors that stop a lockfile from being parsed at all.
+#[derive(Debug)]
+pub enum LockfileError {
+    /// The file couldn't be read.
+    Io(std::io::Error),
+    /// The file name doesn't match any supported lockfile format.
+    UnknownFormat(String),
+    /// The file is a supported format but its contents are malformed.
+    Invalid(String),
+}
+
+impl fmt::Display for LockfileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LockfileError::Io(err) => write!(f, "failed to read lockfile: {err}"),
+            LockfileError::UnknownFormat(name) => {
+                write!(f, "unsupported lockfile `{name}`")
+            }
+            LockfileError::Invalid(reason) => write!(f, "malformed lockfile: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for LockfileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LockfileError::Io(err) => Some(err),
+            LockfileError::UnknownFormat(_) | LockfileError::Invalid(_) => None,
+        }
+    }
+}
+
+/// Parses the lockfile at `path`, picking the parser from the file name.
+pub fn parse_lockfile(path: &Path) -> Result<ParsedLockfile, LockfileError> {
+    use crate::model::Ecosystem;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+
+    if file_name == "package-lock.json" || file_name == "npm-shrinkwrap.json" {
+        let contents = fs::read_to_string(path).map_err(LockfileError::Io)?;
+        return npm::parse_lock(&contents);
+    }
+
+    let kind = detect(file_name).ok_or_else(|| LockfileError::UnknownFormat(file_name.into()))?;
+    let contents = fs::read_to_string(path).map_err(LockfileError::Io)?;
+
+    if kind == LockfileKind::Requirements {
+        let (dependencies, warnings) = pypi::parse_requirements_with_warnings(&contents)
+            .map_err(|err| LockfileError::Invalid(err.to_string()))?;
+        return Ok(ParsedLockfile {
+            ecosystem: Ecosystem::PyPI,
+            dependencies,
+            warnings,
+        });
+    }
+
+    let parse: fn(&str) -> Result<Vec<Dependency>, ParseError> = match kind {
+        LockfileKind::PipfileLock => pypi::parse_pipfile_lock,
+        LockfileKind::CargoLock => cargo::parse_cargo_lock,
+        LockfileKind::PackageJson => npm::parse_package_json,
+        LockfileKind::YarnLock => yarn::parse_yarn_lock,
+        LockfileKind::PnpmLock => pnpm::parse_pnpm_lock,
+        LockfileKind::PoetryLock => pypi::parse_poetry_lock,
+        LockfileKind::Requirements | LockfileKind::PackageLock => {
+            unreachable!("handled above")
+        }
+    };
+    let dependencies = parse(&contents).map_err(|err| LockfileError::Invalid(err.to_string()))?;
+    let ecosystem = match kind {
+        LockfileKind::PipfileLock | LockfileKind::PoetryLock => Ecosystem::PyPI,
+        LockfileKind::CargoLock => Ecosystem::CratesIo,
+        _ => Ecosystem::Npm,
+    };
+    Ok(ParsedLockfile {
+        ecosystem,
+        dependencies,
+        warnings: Vec::new(),
+    })
+}
+
 /// Reads the file at `path` and parses it with the parser matching its
 /// [`detect`]ed kind.
 ///

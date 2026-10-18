@@ -80,11 +80,7 @@ fn security_severity(severity: Severity) -> &'static str {
 /// Renders `report` as a SARIF log. `lockfile` is the scanned file's
 /// contents, used to point each result at the line naming its package;
 /// without it results point at line 1.
-pub fn to_sarif(
-    report: &Report,
-    advisories: &AdvisorySeverities,
-    lockfile: Option<&str>,
-) -> Value {
+pub fn to_sarif(report: &Report, advisories: &AdvisorySeverities, lockfile: Option<&str>) -> Value {
     let uri = artifact_uri(report);
     let rules: Vec<Value> = RULES
         .iter()

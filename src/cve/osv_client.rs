@@ -11,8 +11,15 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use super::cache::OsvCache;
+
+const OSV_BASE_URL: &str = "https://api.osv.dev";
+#[cfg(feature = "async")]
 const OSV_QUERY_URL: &str = "https://api.osv.dev/v1/query";
 const OSV_QUERYBATCH_URL: &str = "https://api.osv.dev/v1/querybatch";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_RETRIES: u32 = 3;
+const BACKOFF_BASE: Duration = Duration::from_millis(500);
 
 /// Maximum number of queries OSV accepts in one `POST /v1/querybatch` call.
 pub const OSV_BATCH_LIMIT: usize = 1000;
@@ -237,10 +244,146 @@ impl std::error::Error for OsvClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             OsvClientError::Request(err) | OsvClientError::Decode(err) => Some(err),
-            OsvClientError::UnexpectedStatus(_) | OsvClientError::BatchSizeMismatch { .. } => {
-                None
+            OsvClientError::RateLimited { .. }
+            | OsvClientError::NotFound
+            | OsvClientError::UnexpectedStatus(_)
+            | OsvClientError::BatchSizeMismatch { .. } => None,
+        }
+    }
+}
+
+/// Client for `POST /v1/query` with a request timeout, retries on 429/5xx
+/// (exponential backoff with jitter) and an optional on-disk response cache.
+pub struct OsvClient {
+    http: reqwest::blocking::Client,
+    base_url: String,
+    backoff_base: Duration,
+    cache: Option<OsvCache>,
+}
+
+impl Default for OsvClient {
+    fn default() -> Self {
+        Self::with_base_url(OSV_BASE_URL)
+    }
+}
+
+impl OsvClient {
+    /// A client for the public OSV API, with no cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A client for an OSV-compatible server at `base_url` (no trailing
+    /// slash), e.g. a mock server in tests.
+    pub fn with_base_url(base_url: &str) -> Self {
+        Self {
+            http: reqwest::blocking::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("static reqwest client config is valid"),
+            base_url: base_url.trim_end_matches('/').to_string(),
+            backoff_base: BACKOFF_BASE,
+            cache: None,
+        }
+    }
+
+    /// Serves repeat queries from `cache` and stores fresh responses in it.
+    pub fn with_cache(mut self, cache: OsvCache) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    /// Overrides the initial retry delay (the delay doubles per retry).
+    pub fn with_backoff(mut self, base: Duration) -> Self {
+        self.backoff_base = base;
+        self
+    }
+
+    /// Queries OSV for known vulnerabilities affecting `package_name` at
+    /// exactly `version` in `ecosystem`, and returns the raw matches.
+    ///
+    /// This does no filtering, deduplication, or severity scoring — an empty
+    /// `vulns` list means OSV has no known vulnerability for this exact
+    /// version. 429 and 5xx responses are retried up to 3 times; any other
+    /// non-success status fails immediately.
+    pub fn query(
+        &self,
+        package_name: &str,
+        ecosystem: Ecosystem,
+        version: &str,
+    ) -> Result<OsvQueryResponse, OsvClientError> {
+        if let Some(hit) = self
+            .cache
+            .as_ref()
+            .and_then(|c| c.get(ecosystem, package_name, version))
+        {
+            return Ok(hit);
+        }
+
+        let url = format!("{}/v1/query", self.base_url);
+        let mut merged = OsvQueryResponse::default();
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let request_body = OsvQueryRequest {
+                version,
+                package: OsvPackageQuery {
+                    name: package_name,
+                    ecosystem: ecosystem.as_osv_str(),
+                },
+                page_token: page_token.as_deref(),
+            };
+
+            let mut attempt = 0;
+            let response = loop {
+                let response = self
+                    .http
+                    .post(&url)
+                    .json(&request_body)
+                    .send()
+                    .map_err(OsvClientError::Request)?;
+                let status = response.status();
+                if status.is_success() {
+                    break response;
+                }
+                let retryable =
+                    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+                if !retryable || attempt >= MAX_RETRIES {
+                    return Err(OsvClientError::UnexpectedStatus(status));
+                }
+                std::thread::sleep(self.backoff_delay(attempt));
+                attempt += 1;
+            };
+
+            let page: OsvQueryResponse = response.json().map_err(OsvClientError::Decode)?;
+            merged.vulns.extend(page.vulns);
+            match page.next_page_token {
+                Some(token) if !token.is_empty() => page_token = Some(token),
+                _ => break,
             }
         }
+
+        if let Some(cache) = &self.cache {
+            cache.put(ecosystem, package_name, version, &merged);
+        }
+        Ok(merged)
+    }
+
+    /// `backoff_base * 2^attempt`, plus up to one `backoff_base` of jitter.
+    fn backoff_delay(&self, attempt: u32) -> Duration {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let jitter = self.backoff_base.mul_f64(f64::from(nanos % 1000) / 1000.0);
+        self.backoff_base * 2u32.pow(attempt) + jitter
+    }
+}
+
+fn check_status(status: reqwest::StatusCode) -> Result<(), OsvClientError> {
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(OsvClientError::UnexpectedStatus(status))
     }
 }
 
@@ -255,7 +398,7 @@ pub fn query_osv(
     ecosystem: Ecosystem,
     version: &str,
 ) -> Result<OsvQueryResponse, OsvClientError> {
-    query_osv_at(OSV_BASE_URL, package_name, ecosystem, version)
+    OsvClient::new().query(package_name, ecosystem, version)
 }
 
 /// Fetches the full record for one vulnerability via `GET /v1/vulns/{id}`.
@@ -266,56 +409,63 @@ pub fn get_vulnerability(id: &str) -> Result<OsvVulnerability, OsvClientError> {
     get_vulnerability_at(OSV_BASE_URL, id)
 }
 
+#[cfg(test)]
 fn query_osv_at(
     base_url: &str,
     package_name: &str,
     ecosystem: Ecosystem,
     version: &str,
 ) -> Result<OsvQueryResponse, OsvClientError> {
-    let client = reqwest::blocking::Client::new();
-    let url = format!("{base_url}/v1/query");
-    let mut merged = OsvQueryResponse::default();
-    let mut page_token: Option<String> = None;
-
-    loop {
-        let request_body = OsvQueryRequest {
-            version,
-            package: OsvPackageQuery {
-                name: package_name,
-                ecosystem: ecosystem.as_osv_str(),
-            },
-            page_token: page_token.as_deref(),
-        };
-
-        let response = client
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .map_err(OsvClientError::Request)?;
-
-        let status = response.status();
-        if !status.is_success() {
-            return Err(OsvClientError::UnexpectedStatus(status));
-        }
-
-        let page: OsvQueryResponse = response.json().map_err(OsvClientError::Decode)?;
-        merged.vulns.extend(page.vulns);
-        match page.next_page_token {
-            Some(token) if !token.is_empty() => page_token = Some(token),
-            _ => return Ok(merged),
-        }
-    }
+    OsvClient::with_base_url(base_url).query(package_name, ecosystem, version)
 }
 
 fn get_vulnerability_at(base_url: &str, id: &str) -> Result<OsvVulnerability, OsvClientError> {
-    let response = reqwest::blocking::Client::new()
+    let response = reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .expect("static reqwest client config is valid")
         .get(format!("{base_url}/v1/vulns/{id}"))
         .send()
-        .await
         .map_err(OsvClientError::Request)?;
 
     check_status(response.status())?;
-    response.json().await.map_err(OsvClientError::Decode)
+    response.json().map_err(OsvClientError::Decode)
+}
+
+/// A query accepted by [`query_osv_batch`]: either an [`OsvBatchQuery`] or a
+/// plain `(name, ecosystem, version)` tuple.
+pub trait BatchQuery {
+    fn name(&self) -> &str;
+    fn ecosystem(&self) -> Ecosystem;
+    fn version(&self) -> &str;
+}
+
+impl BatchQuery for OsvBatchQuery<'_> {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn ecosystem(&self) -> Ecosystem {
+        self.ecosystem
+    }
+
+    fn version(&self) -> &str {
+        self.version
+    }
+}
+
+impl BatchQuery for (&str, Ecosystem, &str) {
+    fn name(&self) -> &str {
+        self.0
+    }
+
+    fn ecosystem(&self) -> Ecosystem {
+        self.1
+    }
+
+    fn version(&self) -> &str {
+        self.2
+    }
 }
 
 /// Queries OSV for many package versions at once via
@@ -325,10 +475,20 @@ fn get_vulnerability_at(base_url: &str, id: &str) -> Result<OsvVulnerability, Os
 /// Returns one [`OsvBatchResult`] per query, in the same order. A query with
 /// more matches than fit on one OSV results page is truncated to that first
 /// page; pagination isn't followed yet.
-pub fn query_osv_batch(
-    queries: &[OsvBatchQuery<'_>],
+pub fn query_osv_batch<Q: BatchQuery>(
+    queries: &[Q],
 ) -> Result<Vec<OsvBatchResult>, OsvClientError> {
-    let client = reqwest::blocking::Client::new();
+    query_osv_batch_at(OSV_QUERYBATCH_URL, queries)
+}
+
+fn query_osv_batch_at<Q: BatchQuery>(
+    url: &str,
+    queries: &[Q],
+) -> Result<Vec<OsvBatchResult>, OsvClientError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .expect("static reqwest client config is valid");
     let mut results = Vec::with_capacity(queries.len());
 
     for chunk in queries.chunks(OSV_BATCH_LIMIT) {
@@ -336,69 +496,12 @@ pub fn query_osv_batch(
             queries: chunk
                 .iter()
                 .map(|query| OsvQueryRequest {
-                    version: query.version,
+                    version: query.version(),
                     package: OsvPackageQuery {
-                        name: query.name,
-                        ecosystem: query.ecosystem.as_osv_str(),
+                        name: query.name(),
+                        ecosystem: query.ecosystem().as_osv_str(),
                     },
-                })
-                .collect(),
-        };
-
-        let response = client
-            .post(OSV_QUERYBATCH_URL)
-            .json(&request_body)
-            .send()
-            .map_err(OsvClientError::Request)?;
-
-        let status = response.status();
-        if !status.is_success() {
-            return Err(OsvClientError::UnexpectedStatus(status));
-        }
-
-        let batch: OsvBatchResponse = response.json().map_err(OsvClientError::Decode)?;
-        if batch.results.len() != chunk.len() {
-            return Err(OsvClientError::BatchSizeMismatch {
-                expected: chunk.len(),
-                got: batch.results.len(),
-            });
-        }
-        results.extend(batch.results);
-    }
-
-    Ok(results)
-}
-
-/// Queries OSV for many `(package name, ecosystem, version)` triples at once
-/// via `POST /v1/querybatch`, chunking into requests of at most 1000 queries.
-///
-/// Returns one [`OsvBatchResult`] per input, in input order. Unlike
-/// [`query_osv`], batch responses carry only vulnerability IDs (and their
-/// `modified` timestamps), not full records: callers that need details must
-/// fetch each ID separately, e.g. `GET https://api.osv.dev/v1/vulns/{id}`.
-pub fn query_osv_batch(
-    queries: &[(&str, Ecosystem, &str)],
-) -> Result<Vec<OsvBatchResult>, OsvClientError> {
-    query_osv_batch_at(OSV_QUERY_BATCH_URL, queries)
-}
-
-fn query_osv_batch_at(
-    url: &str,
-    queries: &[(&str, Ecosystem, &str)],
-) -> Result<Vec<OsvBatchResult>, OsvClientError> {
-    let client = reqwest::blocking::Client::new();
-    let mut results = Vec::with_capacity(queries.len());
-
-    for chunk in queries.chunks(OSV_BATCH_LIMIT) {
-        let request_body = OsvBatchRequest {
-            queries: chunk
-                .iter()
-                .map(|&(name, ecosystem, version)| OsvQueryRequest {
-                    version,
-                    package: OsvPackageQuery {
-                        name,
-                        ecosystem: ecosystem.as_osv_str(),
-                    },
+                    page_token: None,
                 })
                 .collect(),
         };
@@ -415,11 +518,68 @@ fn query_osv_batch_at(
         }
 
         let body: OsvBatchResponse = response.json().map_err(OsvClientError::Decode)?;
+        if body.results.len() != chunk.len() {
+            return Err(OsvClientError::BatchSizeMismatch {
+                expected: chunk.len(),
+                got: body.results.len(),
+            });
+        }
         results.extend(body.results);
     }
-}
 
     Ok(results)
+}
+
+/// Non-blocking variant of [`query_osv`], for use inside an async runtime.
+#[cfg(feature = "async")]
+pub async fn query_osv_async(
+    package_name: &str,
+    ecosystem: Ecosystem,
+    version: &str,
+) -> Result<OsvQueryResponse, OsvClientError> {
+    query_with_client(&reqwest::Client::new(), package_name, ecosystem, version).await
+}
+
+/// Queries OSV for every `(package name, ecosystem, version)` in `packages`,
+/// reusing one HTTP client. Results are in input order; the first failure
+/// aborts the batch.
+#[cfg(feature = "async")]
+pub async fn query_osv_batch_async(
+    packages: &[(&str, Ecosystem, &str)],
+) -> Result<Vec<OsvQueryResponse>, OsvClientError> {
+    let client = reqwest::Client::new();
+    let mut responses = Vec::with_capacity(packages.len());
+    for &(name, ecosystem, version) in packages {
+        responses.push(query_with_client(&client, name, ecosystem, version).await?);
+    }
+    Ok(responses)
+}
+
+#[cfg(feature = "async")]
+async fn query_with_client(
+    client: &reqwest::Client,
+    package_name: &str,
+    ecosystem: Ecosystem,
+    version: &str,
+) -> Result<OsvQueryResponse, OsvClientError> {
+    let request_body = OsvQueryRequest {
+        version,
+        package: OsvPackageQuery {
+            name: package_name,
+            ecosystem: ecosystem.as_osv_str(),
+        },
+        page_token: None,
+    };
+
+    let response = client
+        .post(OSV_QUERY_URL)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(OsvClientError::Request)?;
+
+    check_status(response.status())?;
+    response.json().await.map_err(OsvClientError::Decode)
 }
 
 #[cfg(test)]
@@ -430,7 +590,7 @@ mod tests {
 
     /// Serves `bodies` as 200 JSON responses, one per incoming connection,
     /// and returns the URL plus a handle yielding each request's query count.
-    fn mock_server(bodies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<usize>>) {
+    fn batch_mock_server(bodies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<usize>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1/querybatch", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
@@ -475,7 +635,7 @@ mod tests {
     #[test]
     fn batch_returns_results_in_input_order() {
         let body = r#"{"results":[{"vulns":[{"id":"GHSA-1","modified":"2024-01-01T00:00:00Z"}]},{},{"vulns":[{"id":"GHSA-2"},{"id":"GHSA-3"}]}]}"#;
-        let (url, handle) = mock_server(vec![body.to_string()]);
+        let (url, handle) = batch_mock_server(vec![body.to_string()]);
         let queries = [
             ("lodash", Ecosystem::Npm, "4.17.4"),
             ("requests", Ecosystem::PyPI, "2.31.0"),
@@ -499,7 +659,7 @@ mod tests {
             vec![r#"{"vulns":[{"id":"A"}]}"#; OSV_BATCH_LIMIT].join(",")
         );
         let second = r#"{"results":[{"vulns":[{"id":"B"}]}]}"#.to_string();
-        let (url, handle) = mock_server(vec![first, second]);
+        let (url, handle) = batch_mock_server(vec![first, second]);
         let queries = vec![("lodash", Ecosystem::Npm, "4.17.4"); OSV_BATCH_LIMIT + 1];
 
         let results = query_osv_batch_at(&url, &queries).unwrap();
@@ -512,7 +672,8 @@ mod tests {
 
     #[test]
     fn batch_with_no_queries_makes_no_request() {
-        assert!(query_osv_batch_at("http://127.0.0.1:1/unused", &[])
+        let queries: &[(&str, Ecosystem, &str)] = &[];
+        assert!(query_osv_batch_at("http://127.0.0.1:1/unused", queries)
             .unwrap()
             .is_empty());
     }

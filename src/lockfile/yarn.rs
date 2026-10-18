@@ -32,6 +32,7 @@ pub fn parse_yarn_lock(contents: &str) -> Result<Vec<Dependency>, ParseError> {
                     ecosystem: Ecosystem::Npm,
                     direct: false,
                     dev: false,
+                    path: Vec::new(),
                 });
             }
             current = None;

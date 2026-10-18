@@ -201,10 +201,7 @@ impl Error for ScanError {
 /// Repeated `(name, version)` pairs (the same package installed in several
 /// places) are checked once, and all pinned versions go to the advisory
 /// source in a single batch.
-pub fn scan_lockfile(
-    path: impl AsRef<Path>,
-    opts: &ScanOptions<'_>,
-) -> Result<Report, ScanError> {
+pub fn scan_lockfile(path: impl AsRef<Path>, opts: &ScanOptions<'_>) -> Result<Report, ScanError> {
     let path = path.as_ref();
     let mut timings = Vec::new();
     let mut stage_start = Instant::now();
@@ -282,9 +279,8 @@ pub fn scan_lockfile(
         finish_stage("ignore");
     }
 
-    let count = |is_kind: fn(&FindingKind) -> bool| {
-        findings.iter().filter(|f| is_kind(&f.kind)).count()
-    };
+    let count =
+        |is_kind: fn(&FindingKind) -> bool| findings.iter().filter(|f| is_kind(&f.kind)).count();
     let summary = Summary {
         packages: packages.len(),
         queried,
@@ -347,12 +343,21 @@ impl fmt::Display for DirReport {
             self.lockfiles.len()
         )?;
         for report in &self.lockfiles {
-            write!(f, "\n\n== {} ==\n{report}", report.path.display())?;
+            write!(
+                f,
+                "\n\n== {} ==\n{report}",
+                report.path.to_string_lossy().replace('\\', "/")
+            )?;
         }
         if !self.errors.is_empty() {
             write!(f, "\n\nErrors ({}):", self.errors.len())?;
             for err in &self.errors {
-                write!(f, "\n  - {}: {}", err.path.display(), err.error)?;
+                write!(
+                    f,
+                    "\n  - {}: {}",
+                    err.path.to_string_lossy().replace('\\', "/"),
+                    err.error
+                )?;
             }
         }
         Ok(())

@@ -11,8 +11,10 @@
 //! rates each finding's severity and renders the result, e.g. as SARIF.
 
 pub mod cve;
+pub mod ignore;
 pub mod lockfile;
 pub mod model;
+pub mod pipeline;
 pub mod report;
 pub mod typosquat;
 

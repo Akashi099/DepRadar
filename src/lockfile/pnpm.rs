@@ -45,6 +45,7 @@ pub fn parse_pnpm_lock(contents: &str) -> Result<Vec<Dependency>, ParseError> {
                 ecosystem: Ecosystem::Npm,
                 direct: false,
                 dev: package.dev.unwrap_or(false),
+                path: Vec::new(),
             })
         })
         .collect())
