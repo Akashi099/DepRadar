@@ -1,0 +1,17 @@
+[
+  { "name": "preact", "comment": "Fast 3kB React alternative; one edit from react by design." },
+  { "name": "react-dom", "comment": "Official React DOM renderer; two edits from react-dnd." },
+  { "name": "ms", "comment": "Vercel's millisecond conversion utility; one edit from qs and ws." },
+  { "name": "qs", "comment": "Query-string parser used by Express; one edit from ws and ms." },
+  { "name": "ws", "comment": "The standard Node.js WebSocket library; one edit from qs and ms." },
+  { "name": "yarn", "comment": "The Yarn package manager; one edit from aiohttp's yarl." },
+  { "name": "nock", "comment": "HTTP mocking library for Node.js; one edit from mock." },
+  { "name": "uuid", "comment": "RFC 4122 UUID generator; one edit from cuid." },
+  { "name": "nuxt", "comment": "Vue meta-framework; one edit from next." },
+  { "name": "next", "comment": "React meta-framework by Vercel; one edit from nuxt." },
+  { "name": "vite", "comment": "Frontend build tool; one edit from the vine validator." },
+  { "name": "pino", "comment": "Low-overhead Node.js logger; one edit from pint." },
+  { "name": "boto3", "comment": "The AWS SDK for Python; one edit from its predecessor boto." },
+  { "name": "toml", "comment": "Python TOML library; one edit from tomli." },
+  { "name": "attrs", "comment": "Python classes-without-boilerplate library; one edit from cattrs." }
+]
