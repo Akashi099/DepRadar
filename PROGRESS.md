@@ -458,6 +458,20 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
   line) through `name -` in both text and JSON modes.
 - **By:** eeshasalaudeen734-creator
 - **Closes:** #82
+- **Status:** Merged.
+
+### CLI — shell completions
+
+- **What:** Adds `depradar completions <bash|zsh|fish|powershell>` to
+  [`src/bin/depradar.rs`](src/bin/depradar.rs) using `clap_complete` to
+  generate shell completion scripts to stdout, and documents installation
+  steps for Bash, Zsh, Fish, and PowerShell in [`README.md`](README.md).
+- **Tests:** `assert_cmd` integration tests in [`tests/cli.rs`](tests/cli.rs)
+  verifying that `bash`, `zsh`, `fish`, and `powershell` each exit zero and
+  emit non-empty completion scripts referencing `depradar`, and that
+  unsupported shell names exit with code 2.
+- **By:** deshrajvermay9517-png
+- **Closes:** #86
 - **Status:** In review.
 
 ### CLI — project config file (`depradar.toml`)

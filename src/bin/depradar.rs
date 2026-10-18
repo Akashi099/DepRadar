@@ -7,7 +7,8 @@ use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::generate;
 use serde_json::{json, Value};
 
 use deprader::config::{load_project_config, ConfigFormat, FailOn, ProjectConfig};
@@ -88,6 +89,12 @@ enum Command {
         #[arg(long, default_value_t = 40)]
         min_confidence: u8,
     },
+    /// Generate shell completion scripts to stdout
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }
 
 /// Package registry to watch.
@@ -116,6 +123,25 @@ impl From<FailOnArg> for FailOn {
             FailOnArg::Medium => FailOn::Medium,
             FailOnArg::High => FailOn::High,
             FailOnArg::Critical => FailOn::Critical,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+    Powershell,
+}
+
+impl From<Shell> for clap_complete::Shell {
+    fn from(shell: Shell) -> Self {
+        match shell {
+            Shell::Bash => clap_complete::Shell::Bash,
+            Shell::Zsh => clap_complete::Shell::Zsh,
+            Shell::Fish => clap_complete::Shell::Fish,
+            Shell::Powershell => clap_complete::Shell::PowerShell,
         }
     }
 }
@@ -260,6 +286,20 @@ fn main() -> ExitCode {
                     ExitCode::from(2)
                 }
             }
+        }
+        Command::Watch {
+            registry,
+            min_confidence,
+        } => run_watch(registry, min_confidence),
+        Command::Completions { shell } => {
+            let mut cmd = Cli::command();
+            generate(
+                clap_complete::Shell::from(shell),
+                &mut cmd,
+                "depradar",
+                &mut io::stdout(),
+            );
+            ExitCode::SUCCESS
         }
     }
 }
