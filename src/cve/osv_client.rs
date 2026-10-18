@@ -187,7 +187,12 @@ pub struct OsvQueryResponse {
 pub enum OsvClientError {
     /// The HTTP request itself failed (network error, timeout, TLS, etc).
     Request(reqwest::Error),
-    /// OSV responded, but with a non-success status code.
+    /// OSV responded with 429. `retry_after` is the `Retry-After` header in
+    /// seconds, when present and numeric.
+    RateLimited { retry_after: Option<u64> },
+    /// OSV responded with 404.
+    NotFound,
+    /// OSV responded, but with another non-success status code.
     UnexpectedStatus(reqwest::StatusCode),
     /// The response body wasn't the JSON shape `OsvQueryResponse` expects.
     Decode(reqwest::Error),
@@ -199,6 +204,13 @@ impl std::fmt::Display for OsvClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OsvClientError::Request(err) => write!(f, "OSV request failed: {err}"),
+            OsvClientError::RateLimited {
+                retry_after: Some(secs),
+            } => write!(f, "OSV rate limit hit, retry after {secs}s"),
+            OsvClientError::RateLimited { retry_after: None } => {
+                write!(f, "OSV rate limit hit")
+            }
+            OsvClientError::NotFound => write!(f, "OSV returned 404 not found"),
             OsvClientError::UnexpectedStatus(status) => {
                 write!(f, "OSV returned unexpected status: {status}")
             }
@@ -222,8 +234,8 @@ impl std::error::Error for OsvClientError {
     }
 }
 
-/// Queries OSV for known vulnerabilities affecting `package_name` at exactly
-/// `version` in `ecosystem`, and returns the raw matches.
+/// Merges records that refer to the same issue, i.e. whose `id`/`aliases`
+/// overlap (typically a GHSA record and its CVE).
 ///
 /// This does no filtering, deduplication, or severity scoring — an empty
 /// `vulns` list in the returned [`OsvQueryResponse`] means OSV has no known
@@ -395,6 +407,7 @@ fn query_osv_batch_at(
         let body: OsvBatchResponse = response.json().map_err(OsvClientError::Decode)?;
         results.extend(body.results);
     }
+}
 
     Ok(results)
 }
