@@ -9,14 +9,21 @@
 //!
 //! The lists are a hand-curated, representative snapshot of widely-used
 //! packages — not a live-fetched ranking. Refreshing them from the registries'
-//! real download stats is a later task; nothing here depends on the exact
-//! ordering or count.
+//! real download stats is a later task. [`popularity_rank`] treats file order
+//! as an approximate ranking (the best-known names sit near the top of each
+//! file); nothing else depends on the exact ordering or count.
+
+use std::sync::OnceLock;
 
 /// Raw JSON text of the npm popular-package list, embedded at compile time.
 const NPM_TOP_PACKAGES_JSON: &str = include_str!("../../data/popular-packages/npm-top1000.json");
 
 /// Raw JSON text of the PyPI popular-package list, embedded at compile time.
 const PYPI_TOP_PACKAGES_JSON: &str = include_str!("../../data/popular-packages/pypi-top1000.json");
+
+/// Raw JSON text of the allowlist of legitimate near-collisions, embedded at
+/// compile time.
+const ALLOWLIST_JSON: &str = include_str!("../../data/allowlist.json");
 
 /// Loads the bundled npm and PyPI popular-package lists and returns them as a
 /// single combined list.
@@ -28,6 +35,38 @@ pub fn load_popular_packages() -> Vec<String> {
     let mut combined = parse_string_array(NPM_TOP_PACKAGES_JSON);
     combined.extend(parse_string_array(PYPI_TOP_PACKAGES_JSON));
     combined
+}
+
+/// The npm and PyPI lists, parsed once and cached for the life of the
+/// process.
+fn registry_lists() -> &'static (Vec<String>, Vec<String>) {
+    static LISTS: OnceLock<(Vec<String>, Vec<String>)> = OnceLock::new();
+    LISTS.get_or_init(|| {
+        (
+            parse_string_array(NPM_TOP_PACKAGES_JSON),
+            parse_string_array(PYPI_TOP_PACKAGES_JSON),
+        )
+    })
+}
+
+/// The same combined list as [`load_popular_packages`], parsed once and
+/// cached, for callers that score many names.
+pub fn popular_packages() -> &'static [String] {
+    static COMBINED: OnceLock<Vec<String>> = OnceLock::new();
+    COMBINED.get_or_init(load_popular_packages)
+}
+
+/// Zero-based popularity rank of `name` within its own registry list (0 is
+/// the most popular), or `None` if it is in neither list.
+///
+/// A name present on both registries gets the better of its two ranks.
+pub fn popularity_rank(name: &str) -> Option<usize> {
+    let (npm, pypi) = registry_lists();
+    let rank_in = |list: &[String]| list.iter().position(|entry| entry == name);
+    match (rank_in(npm), rank_in(pypi)) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// Minimal parser for a JSON document that is an array of strings.

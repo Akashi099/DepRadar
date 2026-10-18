@@ -7,3 +7,5 @@
 
 pub mod cache;
 pub mod osv_client;
+pub mod remediation;
+pub mod severity;

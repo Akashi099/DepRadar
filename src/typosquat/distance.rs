@@ -2,8 +2,8 @@
 //!
 //! A typosquatted package name is, almost by definition, a small number of
 //! keystroke edits away from a popular one. [`levenshtein_distance`] measures
-//! that gap and [`nearest_match`] finds the closest legitimate name in a
-//! reference set. No scoring or thresholding lives here — callers decide what
+//! that gap, [`nearest_match`] finds the closest legitimate name in a
+//! reference set, and [`nearest_matches`] returns the closest `n`. No scoring or thresholding lives here — callers decide what
 //! counts as "suspiciously close".
 
 /// Standard Levenshtein edit distance between `a` and `b`: the minimum number
@@ -44,28 +44,42 @@ pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// Returns up to `n` names from `dataset` closest to `candidate`, each with
+/// its [`levenshtein_distance`], sorted by distance and then by dataset order.
+///
+/// `n == 0` or an empty `dataset` yields an empty vector; `n` larger than the
+/// dataset returns every entry. Ties keep the order the names appear in
+/// `dataset`, so the first element always agrees with [`nearest_match`].
+pub fn nearest_matches(candidate: &str, dataset: &[String], n: usize) -> Vec<(String, usize)> {
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(&String, usize)> = dataset
+        .iter()
+        .map(|name| (name, levenshtein_distance(candidate, name)))
+        .collect();
+    // Stable sort: equal distances stay in dataset order.
+    scored.sort_by_key(|&(_, distance)| distance);
+    scored.truncate(n);
+
+    scored
+        .into_iter()
+        .map(|(name, distance)| (name.clone(), distance))
+        .collect()
+}
+
 /// Returns the name in `dataset` with the smallest [`levenshtein_distance`] to
 /// `candidate`, together with that distance.
 ///
-/// On a tie the earliest entry in `dataset` wins. An empty `dataset` yields
+/// A thin wrapper over [`nearest_matches`] with `n = 1`. On a tie the earliest
+/// entry in `dataset` wins. An empty `dataset` yields
 /// `(String::new(), usize::MAX)`.
 pub fn nearest_match(candidate: &str, dataset: &[String]) -> (String, usize) {
-    let mut best: Option<(&String, usize)> = None;
-
-    for name in dataset {
-        let distance = levenshtein_distance(candidate, name);
-        if best.is_none_or(|(_, best_distance)| distance < best_distance) {
-            best = Some((name, distance));
-            if distance == 0 {
-                break; // nothing can beat an exact match
-            }
-        }
-    }
-
-    match best {
-        Some((name, distance)) => (name.clone(), distance),
-        None => (String::new(), usize::MAX),
-    }
+    nearest_matches(candidate, dataset, 1)
+        .into_iter()
+        .next()
+        .unwrap_or((String::new(), usize::MAX))
 }
 
 #[cfg(test)]
@@ -130,5 +144,43 @@ mod tests {
         let (name, distance) = nearest_match("anything", &[]);
         assert_eq!(name, "");
         assert_eq!(distance, usize::MAX);
+    }
+
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn char_len(s: &str) -> usize {
+            s.chars().count()
+        }
+
+        proptest! {
+            #[test]
+            fn distance_is_symmetric(a in any::<String>(), b in any::<String>()) {
+                prop_assert_eq!(levenshtein_distance(&a, &b), levenshtein_distance(&b, &a));
+            }
+
+            #[test]
+            fn distance_to_self_is_zero(a in any::<String>()) {
+                prop_assert_eq!(levenshtein_distance(&a, &a), 0);
+            }
+
+            #[test]
+            fn distance_satisfies_triangle_inequality(
+                a in any::<String>(),
+                b in any::<String>(),
+                c in any::<String>(),
+            ) {
+                prop_assert!(
+                    levenshtein_distance(&a, &c)
+                        <= levenshtein_distance(&a, &b) + levenshtein_distance(&b, &c)
+                );
+            }
+
+            #[test]
+            fn distance_is_at_most_the_longer_length(a in any::<String>(), b in any::<String>()) {
+                prop_assert!(levenshtein_distance(&a, &b) <= char_len(&a).max(char_len(&b)));
+            }
+        }
     }
 }
