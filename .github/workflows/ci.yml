@@ -36,8 +36,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --workspace --locked
-      - name: Compile benchmarks
-        run: cargo bench --no-run --locked
+      - name: Run tests (async feature)
+        run: cargo test -p deprader --features async --locked
 
   contract-wasm:
     name: Build contract (wasm)

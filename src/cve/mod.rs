@@ -6,3 +6,5 @@
 //! belongs with the (not-yet-written) CVE scanner module.
 
 pub mod osv_client;
+pub mod remediation;
+pub mod severity;
