@@ -1,183 +1,133 @@
-//! End-to-end tests for the `depradar` binary. Every scan runs with
-//! `--offline` so no test depends on the OSV API; the npm-basic fixture
-//! still yields one finding (the `expresss` typosquat, rated high).
+//! End-to-end tests for the `depradar` binary (and the deprecated `scan`
+//! alias). Every scan runs with `--offline` so no test touches the network.
+
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-
-fn fixture(path: &str) -> String {
-    format!("{}/tests/fixtures/{path}", env!("CARGO_MANIFEST_DIR"))
-}
+use serde_json::Value;
 
 fn depradar() -> Command {
-    let mut cmd = Command::cargo_bin("depradar").unwrap();
-    cmd.env_remove("NO_COLOR");
-    cmd
+    Command::cargo_bin("depradar").unwrap()
 }
 
-fn stdout(cmd: &mut Command) -> String {
-    String::from_utf8(cmd.output().unwrap().stdout).unwrap()
+fn fixture(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(relative)
+}
+
+/// Parses the whole of stdout as one JSON document, which fails if anything
+/// else (logs, a second document) was printed alongside it.
+fn stdout_json(output: &std::process::Output) -> Value {
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+        panic!(
+            "stdout is not a single JSON document ({err}):\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })
 }
 
 #[test]
-fn no_color_env_strips_ansi_codes_even_with_color_always() {
-    let out = stdout(
-        depradar()
-            .env("NO_COLOR", "1")
-            .args(["--offline", "--color", "always"])
-            .arg(fixture("npm-basic/package-lock.json")),
+fn name_output_matches_the_legacy_scan_binary() {
+    let new = depradar().args(["name", "expresss"]).output().unwrap();
+    let old = Command::cargo_bin("scan")
+        .unwrap()
+        .arg("expresss")
+        .output()
+        .unwrap();
+
+    assert!(new.status.success());
+    assert!(old.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&new.stdout),
+        String::from_utf8_lossy(&old.stdout)
     );
-
-    assert!(out.contains("[HIGH] expresss"), "{out}");
-    assert!(!out.contains('\u{1b}'), "ANSI escape in output: {out:?}");
+    assert!(String::from_utf8_lossy(&new.stdout).contains("likely typosquat"));
+    assert!(String::from_utf8_lossy(&old.stderr).contains("deprecated"));
 }
 
 #[test]
-fn color_always_colors_severity_labels() {
-    let out = stdout(
-        depradar()
-            .args(["--offline", "--color", "always"])
-            .arg(fixture("npm-basic/package-lock.json")),
+fn help_text_matches_snapshot() {
+    let output = depradar().arg("--help").output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        include_str!("snapshots/depradar-help.txt"),
+        "help text changed; if that's intended, regenerate the snapshot with \
+         `cargo run --bin depradar -- --help > tests/snapshots/depradar-help.txt`"
     );
-
-    assert!(out.contains("\u{1b}["), "expected ANSI codes: {out:?}");
-    assert!(out.contains("expresss"), "{out}");
 }
 
 #[test]
-fn piped_output_is_uncolored_by_default() {
-    let out = stdout(
-        depradar()
-            .arg("--offline")
-            .arg(fixture("npm-basic/package-lock.json")),
+fn name_json_is_one_document() {
+    let output = depradar()
+        .args(["--format", "json", "name", "expresss"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let json = stdout_json(&output);
+    assert_eq!(json["candidate"], "expresss");
+    assert_eq!(json["likely_typosquat"], true);
+    assert_eq!(json["distance_match"]["name"], "express");
+    assert_eq!(json["distance_match"]["distance"], 1);
+}
+
+#[test]
+fn scan_dir_json_groups_findings_by_lockfile() {
+    let output = depradar()
+        .args(["scan", "--offline", "--format", "json"])
+        .arg(fixture("npm-basic"))
+        .output()
+        .unwrap();
+    // A typosquat was found.
+    assert_eq!(output.status.code(), Some(1));
+
+    let json = stdout_json(&output);
+    let lockfiles = json["lockfiles"].as_array().unwrap();
+    assert_eq!(lockfiles.len(), 1);
+    assert_eq!(lockfiles[0]["path"], "package-lock.json");
+    let findings = lockfiles[0]["findings"].as_array().unwrap();
+    assert!(
+        findings
+            .iter()
+            .any(|f| f["package"] == "expresss" && f["kind"] == "typosquat"),
+        "{findings:?}"
     );
-
-    assert!(out.contains("[HIGH] expresss"), "{out}");
-    assert!(!out.contains('\u{1b}'), "ANSI escape in output: {out:?}");
+    assert_eq!(json["errors"], Value::Array(Vec::new()));
 }
 
 #[test]
-fn quiet_prints_only_findings_and_the_summary_line() {
-    let out = stdout(
-        depradar()
-            .args(["--offline", "--quiet"])
-            .arg(fixture("npm-basic/package-lock.json")),
-    );
-
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 2, "{out}");
-    assert!(lines[0].starts_with("[HIGH] expresss@1.0.0"), "{out}");
-    assert!(lines[1].starts_with("Summary: 1 typosquat(s)"), "{out}");
-    assert!(!out.contains("Scanned "), "{out}");
-    assert!(!out.contains("Warnings"), "{out}");
+fn scan_file_text_reports_findings() {
+    let output = depradar()
+        .args(["scan", "--offline"])
+        .arg(fixture("pypi-basic/requirements.txt"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("reqeusts"), "{stdout}");
 }
 
 #[test]
-fn verbose_lists_dependencies_and_stage_timings() {
-    let out = stdout(
-        depradar()
-            .args(["--offline", "--verbose"])
-            .arg(fixture("npm-basic/package-lock.json")),
-    );
-
-    assert!(out.contains("Dependencies checked (4):"), "{out}");
-    for dependency in ["express@4.21.2", "expresss@1.0.0", "lodash@4.17.4"] {
-        assert!(out.contains(&format!("  - {dependency} [")), "{dependency}: {out}");
-    }
-    assert!(out.contains("  - zzz-unversioned-internal-fixture ["), "{out}");
-    assert!(out.contains("Timings:"), "{out}");
-    assert!(out.contains("  - parse: "), "{out}");
-    assert!(out.contains("  - typosquat: "), "{out}");
-    assert!(out.contains("  - total: "), "{out}");
-    assert!(out.contains("Summary: "), "{out}");
+fn scan_error_in_json_mode_still_prints_one_document() {
+    let output = depradar()
+        .args([
+            "--format",
+            "json",
+            "scan",
+            "--offline",
+            "does/not/exist.lock",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stdout_json(&output)["error"].is_string());
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("error: "));
 }
 
 #[test]
-fn quiet_and_verbose_together_is_a_usage_error() {
-    depradar()
-        .args(["--offline", "--quiet", "--verbose"])
-        .arg(fixture("npm-basic/package-lock.json"))
-        .assert()
-        .code(2);
-}
-
-#[test]
-fn exit_0_when_the_scan_is_clean() {
-    depradar()
-        .arg("--offline")
-        .arg(fixture("npm-clean/package-lock.json"))
-        .assert()
-        .code(0);
-}
-
-#[test]
-fn exit_1_when_a_finding_meets_the_default_high_threshold() {
-    depradar()
-        .arg("--offline")
-        .arg(fixture("npm-basic/package-lock.json"))
-        .assert()
-        .code(1);
-}
-
-#[test]
-fn fail_on_compares_against_the_finding_severity() {
-    let lockfile = fixture("npm-basic/package-lock.json");
-    // The only finding is a high-severity typosquat.
-    for (level, code) in [
-        ("low", 1),
-        ("medium", 1),
-        ("high", 1),
-        ("critical", 0),
-        ("none", 0),
-    ] {
-        depradar()
-            .args(["--offline", "--fail-on", level])
-            .arg(&lockfile)
-            .assert()
-            .code(code);
-    }
-    depradar()
-        .args(["--offline", "--fail-on=critical"])
-        .arg(&lockfile)
-        .assert()
-        .code(0);
-}
-
-#[test]
-fn exit_2_on_usage_errors() {
-    let lockfile = fixture("npm-basic/package-lock.json");
-    depradar().assert().code(2);
-    depradar()
-        .args(["--offline", "--fail-on", "severe"])
-        .arg(&lockfile)
-        .assert()
-        .code(2);
-    depradar()
-        .args(["--offline", "--no-such-flag"])
-        .arg(&lockfile)
-        .assert()
-        .code(2);
-}
-
-#[test]
-fn exit_2_when_the_lockfile_cant_be_parsed() {
-    depradar()
-        .arg("--offline")
-        .arg(fixture("does-not-exist/package-lock.json"))
-        .assert()
-        .code(2);
-    depradar()
-        .arg("--offline")
-        .arg(fixture("sarif-schema-2.1.0.json"))
-        .assert()
-        .code(2);
-}
-
-#[test]
-fn help_documents_the_exit_codes() {
-    let out = stdout(depradar().arg("--help"));
-    assert!(out.contains("--fail-on <LEVEL>"), "{out}");
-    assert!(out.contains("Exit codes:"), "{out}");
-    for code in ["  0  ", "  1  ", "  2  "] {
-        assert!(out.contains(code), "missing exit code line {code:?}: {out}");
-    }
+fn missing_subcommand_is_a_usage_error() {
+    let output = depradar().output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
 }

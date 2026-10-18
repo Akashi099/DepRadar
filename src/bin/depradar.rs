@@ -1,293 +1,262 @@
-//! `depradar` — scan a project lockfile for typosquats and known
-//! vulnerabilities.
+//! `depradar` — check package names and project lockfiles for typosquats and
+//! known vulnerabilities.
 //!
 //! Run `depradar --help` for usage.
 
-use std::env;
-use std::fs;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
 
-use deprader::ignore::{IgnoreFile, IGNORE_FILE_NAME};
-use deprader::pipeline::{scan_lockfile, ScanOptions, StageTiming};
-use deprader::report::sarif::to_sarif;
-use deprader::report::text::{render, use_color, ColorChoice, TextOptions, Verbosity};
-use deprader::report::{severity_of, AdvisorySeverities, Severity};
+use clap::{Parser, Subcommand, ValueEnum};
+use serde_json::{json, Value};
 
-const HELP: &str = "\
-depradar — scan a lockfile for typosquats and known vulnerabilities
+use deprader::ignore::{IgnoreFile, Suppressed, IGNORE_FILE_NAME};
+use deprader::model::{Ecosystem, Finding, FindingKind};
+use deprader::pipeline::{scan_dir, scan_lockfile, DirReport, Report, ScanOptions};
+use deprader::typosquat::scanner::{score_package, ScanResult};
 
-Usage: depradar [OPTIONS] <LOCKFILE>
-
-Arguments:
-  <LOCKFILE>  package-lock.json, npm-shrinkwrap.json or requirements*.txt
-
-Options:
-  -f, --format <FORMAT>  Output format: text or sarif [default: text]
-  -o, --output <FILE>    Write the report to FILE instead of stdout
-      --color <WHEN>     Color severity labels: auto, always or never [default: auto]
-  -q, --quiet            Print only the findings and the summary line
-  -v, --verbose          Also list every dependency checked and the time per stage
-      --fail-on <LEVEL>  Exit 1 if any finding is at or above LEVEL: low, medium,
-                         high, critical or none (never fail) [default: high]
-      --offline          Skip the OSV vulnerability lookup (typosquat checks only)
-  -h, --help             Print this help
-
-Color is off when stdout isn't a terminal (with --color auto) and whenever
-the NO_COLOR environment variable is set to a non-empty value. --quiet and
---verbose only affect text output.
+const EXAMPLES: &str = "\
+Examples:
+  depradar name expresss                 Check one package name for typosquat signals
+  depradar scan package-lock.json        Scan a lockfile for typosquats and known CVEs
+  depradar scan .                        Scan every lockfile in a directory or monorepo
+  depradar scan . --offline              Typosquat checks only, no OSV lookup
+  depradar --format json scan . | jq     Machine-readable output for CI
 
 Exit codes:
-  0  No findings at or above the --fail-on level (suppressed findings never count)
-  1  At least one finding at or above the --fail-on level
-  2  Usage error, or the scan couldn't complete (unreadable or malformed
-     lockfile or .depradarignore, failed OSV lookup)
-";
+  0  No findings
+  1  At least one finding (`scan` only; suppressed findings don't count)
+  2  Usage error, or the scan couldn't complete";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Parser)]
+#[command(
+    name = "depradar",
+    version,
+    about = "Check package names and lockfiles for typosquats and known vulnerabilities",
+    after_help = EXAMPLES
+)]
+struct Cli {
+    /// Output format. `json` prints exactly one JSON document to stdout;
+    /// errors and warnings still go to stderr.
+    #[arg(long, short = 'f', value_enum, default_value_t = Format::Text, global = true)]
+    format: Format,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Score a single package name against the popular-package dataset
+    Name {
+        /// The package name to check, e.g. `expresss`
+        package: String,
+    },
+    /// Scan a lockfile, or every lockfile under a directory
+    Scan {
+        /// A lockfile (package-lock.json, npm-shrinkwrap.json,
+        /// requirements*.txt) or a directory to search for them
+        path: PathBuf,
+        /// Skip the OSV vulnerability lookup (typosquat checks only)
+        #[arg(long)]
+        offline: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Format {
     Text,
-    Sarif,
-}
-
-/// The `--fail-on` threshold: findings at or above it fail the run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FailOn {
-    AtLeast(Severity),
-    Never,
-}
-
-impl FailOn {
-    fn parse(value: &str) -> Option<FailOn> {
-        let level = match value.to_ascii_lowercase().as_str() {
-            "low" => Severity::Low,
-            "medium" => Severity::Medium,
-            "high" => Severity::High,
-            "critical" => Severity::Critical,
-            "none" => return Some(FailOn::Never),
-            _ => return None,
-        };
-        Some(FailOn::AtLeast(level))
-    }
-
-    fn fails(self, severity: Severity) -> bool {
-        match self {
-            FailOn::AtLeast(threshold) => severity >= threshold,
-            FailOn::Never => false,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Args {
-    lockfile: PathBuf,
-    format: Format,
-    output: Option<PathBuf>,
-    color: ColorChoice,
-    verbosity: Verbosity,
-    fail_on: FailOn,
-    offline: bool,
-}
-
-/// What the command line asked for.
-enum Command {
-    Help,
-    Scan(Args),
-}
-
-fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Command, String> {
-    let mut lockfile = None;
-    let mut format = Format::Text;
-    let mut output = None;
-    let mut color = ColorChoice::Auto;
-    let mut quiet = false;
-    let mut verbose = false;
-    let mut fail_on = FailOn::AtLeast(Severity::High);
-    let mut offline = false;
-
-    let mut raw = raw.into_iter();
-    while let Some(arg) = raw.next() {
-        let (flag, inline) = match arg.split_once('=') {
-            Some((flag, value)) if flag.starts_with("--") => (flag.to_string(), Some(value)),
-            _ => (arg.clone(), None),
-        };
-        let mut value = |name: &str| -> Result<String, String> {
-            match inline {
-                Some(value) => Ok(value.to_string()),
-                None => raw.next().ok_or_else(|| format!("{name} needs a value")),
-            }
-        };
-        match flag.as_str() {
-            "-h" | "--help" => return Ok(Command::Help),
-            "-f" | "--format" => {
-                format = match value("--format")?.as_str() {
-                    "text" => Format::Text,
-                    "sarif" => Format::Sarif,
-                    other => {
-                        return Err(format!(
-                            "unknown format `{other}` (expected text or sarif)"
-                        ))
-                    }
-                }
-            }
-            "-o" | "--output" => output = Some(PathBuf::from(value("--output")?)),
-            "--color" => {
-                color = match value("--color")?.as_str() {
-                    "auto" => ColorChoice::Auto,
-                    "always" => ColorChoice::Always,
-                    "never" => ColorChoice::Never,
-                    other => {
-                        return Err(format!(
-                            "unknown --color value `{other}` (expected auto, always or never)"
-                        ))
-                    }
-                }
-            }
-            "-q" | "--quiet" => quiet = true,
-            "-v" | "--verbose" => verbose = true,
-            "--fail-on" => {
-                let level = value("--fail-on")?;
-                fail_on = FailOn::parse(&level).ok_or_else(|| {
-                    format!(
-                        "unknown --fail-on level `{level}` \
-                         (expected low, medium, high, critical or none)"
-                    )
-                })?;
-            }
-            "--offline" => offline = true,
-            _ if flag.starts_with('-') && flag != "-" => {
-                return Err(format!("unknown option `{flag}`"))
-            }
-            _ if lockfile.is_some() => return Err(format!("unexpected argument `{arg}`")),
-            _ => lockfile = Some(PathBuf::from(&arg)),
-        }
-    }
-
-    let lockfile = lockfile.ok_or("missing <LOCKFILE>")?;
-    let verbosity = match (quiet, verbose) {
-        (true, true) => return Err("--quiet and --verbose can't be used together".to_string()),
-        (true, false) => Verbosity::Quiet,
-        (false, true) => Verbosity::Verbose,
-        (false, false) => Verbosity::Normal,
-    };
-    Ok(Command::Scan(Args {
-        lockfile,
-        format,
-        output,
-        color,
-        verbosity,
-        fail_on,
-        offline,
-    }))
+    Json,
 }
 
 fn main() -> ExitCode {
-    let args = match parse_args(env::args().skip(1)) {
-        Ok(Command::Help) => {
-            print!("{HELP}");
-            return ExitCode::SUCCESS;
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Name { package } => {
+            let result = score_package(&package);
+            match cli.format {
+                Format::Text => println!("{result}"),
+                Format::Json => print_json(&score_json(&result)),
+            }
+            ExitCode::SUCCESS
         }
-        Ok(Command::Scan(args)) => args,
-        Err(message) => {
-            eprintln!("error: {message}\n\nRun `depradar --help` for usage.");
-            return ExitCode::from(2);
-        }
-    };
+        Command::Scan { path, offline } => match scan(&path, offline) {
+            Ok(scanned) => {
+                match (cli.format, &scanned) {
+                    (Format::Text, Scanned::File(report)) => println!("{report}"),
+                    (Format::Text, Scanned::Dir(report)) => println!("{report}"),
+                    (Format::Json, scanned) => print_json(&scanned_json(scanned)),
+                }
+                if scanned.has_findings() {
+                    ExitCode::FAILURE
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(message) => {
+                eprintln!("error: {message}");
+                if cli.format == Format::Json {
+                    print_json(&json!({ "error": message }));
+                }
+                ExitCode::from(2)
+            }
+        },
+    }
+}
 
-    match run(&args) {
-        Ok(Outcome::Clean) => ExitCode::SUCCESS,
-        Ok(Outcome::Failed) => ExitCode::FAILURE,
-        Err(message) => {
-            eprintln!("error: {message}");
-            ExitCode::from(2)
+/// What `depradar scan` scanned: one lockfile, or a directory tree.
+enum Scanned {
+    File(Report),
+    Dir(DirReport),
+}
+
+impl Scanned {
+    fn has_findings(&self) -> bool {
+        match self {
+            Scanned::File(report) => report.has_findings(),
+            Scanned::Dir(report) => report.has_findings(),
         }
     }
 }
 
-/// Whether the scan passed the `--fail-on` gate.
-enum Outcome {
-    /// No finding at or above the threshold (exit 0).
-    Clean,
-    /// At least one finding at or above the threshold (exit 1).
-    Failed,
-}
+/// Scans `path` as a single lockfile or, for a directory, every lockfile
+/// under it, honouring a `.depradarignore` next to the lockfile (or at the
+/// directory's root).
+fn scan(path: &Path, offline: bool) -> Result<Scanned, String> {
+    let ignore_dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(""))
+    };
+    let ignore_path = ignore_dir.join(IGNORE_FILE_NAME);
+    let ignore = if ignore_path.is_file() {
+        Some(IgnoreFile::load(&ignore_path).map_err(|err| err.to_string())?)
+    } else {
+        None
+    };
 
-/// Scans, writes the report, and judges the findings against `--fail-on`.
-fn run(args: &Args) -> Result<Outcome, String> {
-    let ignore = load_ignore(&args.lockfile)?;
-    let opts = ScanOptions {
+    let mut opts = ScanOptions {
         ignore: ignore.as_ref(),
-        advisories: if args.offline {
-            None
-        } else {
-            ScanOptions::default().advisories
-        },
         ..ScanOptions::default()
     };
-    let mut report = scan_lockfile(&args.lockfile, &opts).map_err(|err| err.to_string())?;
-
-    let advisories = if args.offline {
-        AdvisorySeverities::default()
-    } else {
-        let started = Instant::now();
-        let (advisories, warnings) = AdvisorySeverities::fetch(&report.findings);
-        report.summary.warnings += warnings.len();
-        report.warnings.extend(warnings);
-        report.timings.push(StageTiming {
-            stage: "severity",
-            elapsed: started.elapsed(),
-        });
-        advisories
-    };
-
-    let rendered = match args.format {
-        Format::Text => {
-            // Files never get color unless asked for; `use_color` treats them
-            // like a pipe.
-            let is_terminal = args.output.is_none() && std::io::stdout().is_terminal();
-            let no_color = env::var("NO_COLOR").ok();
-            let opts = TextOptions {
-                color: use_color(args.color, no_color.as_deref(), is_terminal),
-                verbosity: args.verbosity,
-            };
-            render(&report, &advisories, &opts)
-        }
-        Format::Sarif => {
-            let contents = fs::read_to_string(&args.lockfile).ok();
-            let sarif = to_sarif(&report, &advisories, contents.as_deref());
-            let mut text = serde_json::to_string_pretty(&sarif).map_err(|err| err.to_string())?;
-            text.push('\n');
-            text
-        }
-    };
-
-    match &args.output {
-        Some(path) => fs::write(path, rendered)
-            .map_err(|err| format!("couldn't write {}: {err}", path.display()))?,
-        None => print!("{rendered}"),
+    if offline {
+        opts.advisories = None;
     }
 
-    let failed = report
-        .findings
-        .iter()
-        .any(|finding| args.fail_on.fails(severity_of(finding, &advisories)));
-    Ok(if failed {
-        Outcome::Failed
+    if path.is_dir() {
+        scan_dir(path, &opts)
+            .map(Scanned::Dir)
+            .map_err(|err| format!("{}: {err}", path.display()))
     } else {
-        Outcome::Clean
+        scan_lockfile(path, &opts)
+            .map(Scanned::File)
+            .map_err(|err| err.to_string())
+    }
+}
+
+fn print_json(value: &Value) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).expect("a serde_json::Value always serializes")
+    );
+}
+
+/// The registry name as OSV spells it.
+fn ecosystem_name(ecosystem: Ecosystem) -> &'static str {
+    match ecosystem {
+        Ecosystem::Npm => "npm",
+        Ecosystem::PyPI => "PyPI",
+        Ecosystem::CratesIo => "crates.io",
+    }
+}
+
+fn score_json(result: &ScanResult) -> Value {
+    json!({
+        "candidate": result.candidate,
+        "likely_typosquat": result.is_likely_typosquat(),
+        "confidence": result.confidence,
+        "distance_match": result
+            .distance_match
+            .as_ref()
+            .map(|(name, distance)| json!({ "name": name, "distance": distance })),
+        "homoglyph_match": result.homoglyph_match,
+        "digit_swap_match": result.digit_swap_match,
     })
 }
 
-/// Loads the `.depradarignore` next to the lockfile, if there is one.
-fn load_ignore(lockfile: &Path) -> Result<Option<IgnoreFile>, String> {
-    let path = lockfile
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .join(IGNORE_FILE_NAME);
-    if !path.is_file() {
-        return Ok(None);
+/// One shape for both scan targets, so consumers needn't care which was
+/// scanned: a single file is a tree with one lockfile and no errors.
+fn scanned_json(scanned: &Scanned) -> Value {
+    match scanned {
+        Scanned::File(report) => json!({
+            "root": report.path,
+            "lockfiles": [report_json(report)],
+            "errors": [],
+        }),
+        Scanned::Dir(report) => json!({
+            "root": report.root,
+            "lockfiles": report.lockfiles.iter().map(report_json).collect::<Vec<_>>(),
+            "errors": report
+                .errors
+                .iter()
+                .map(|err| json!({ "path": err.path, "message": err.error.to_string() }))
+                .collect::<Vec<_>>(),
+        }),
     }
-    IgnoreFile::load(&path).map(Some).map_err(|err| err.to_string())
+}
+
+fn report_json(report: &Report) -> Value {
+    let summary = &report.summary;
+    json!({
+        "path": report.path,
+        "ecosystem": ecosystem_name(report.ecosystem),
+        "summary": {
+            "packages": summary.packages,
+            "queried": summary.queried,
+            "typosquats": summary.typosquats,
+            "vulnerabilities": summary.vulnerabilities,
+            "suppressed": summary.suppressed,
+            "warnings": summary.warnings,
+        },
+        "findings": report.findings.iter().map(finding_json).collect::<Vec<_>>(),
+        "suppressed": report.suppressed.iter().map(suppressed_json).collect::<Vec<_>>(),
+        "warnings": report.warnings,
+    })
+}
+
+fn finding_json(finding: &Finding) -> Value {
+    let mut value = json!({
+        "package": finding.package,
+        "version": finding.version,
+        "ecosystem": ecosystem_name(finding.ecosystem),
+        "direct": finding.direct,
+        "path": finding.path,
+    });
+    let kind = match &finding.kind {
+        FindingKind::Typosquat {
+            distance_match,
+            homoglyph_match,
+        } => json!({
+            "kind": "typosquat",
+            "distance_match": distance_match
+                .as_ref()
+                .map(|(name, distance)| json!({ "name": name, "distance": distance })),
+            "homoglyph_match": homoglyph_match,
+        }),
+        FindingKind::Vulnerability { advisory_id } => json!({
+            "kind": "vulnerability",
+            "advisory_id": advisory_id,
+        }),
+    };
+    if let (Value::Object(fields), Value::Object(extra)) = (&mut value, kind) {
+        fields.extend(extra);
+    }
+    value
+}
+
+fn suppressed_json(suppressed: &Suppressed) -> Value {
+    json!({
+        "finding": finding_json(&suppressed.finding),
+        "reason": suppressed.reason,
+        "expires": suppressed.expires.map(|date| date.to_string()),
+    })
 }

@@ -385,83 +385,64 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Closes:** #37
 - **Status:** In review.
 
-### CLI — SARIF output for GitHub code scanning
+### scanner — yarn.lock (v1) parser
 
-- **What:** Adds the `depradar` binary (`src/bin/depradar.rs`) with
-  `--format text|sarif`, `--output <FILE>` and `--offline` (skip the OSV
-  lookup). `--format sarif` writes a SARIF 2.1.0 log via the new
-  `src/report/sarif.rs`: one rule per `FindingKind` (`typosquat`,
-  `vulnerability`), one result per finding, each located at the scanned
-  lockfile on the first line that names the package, with a stable
-  `partialFingerprints` entry so GitHub can track alerts across runs.
-  Severity maps to the SARIF `level` (critical/high → `error`, medium →
-  `warning`, low → `note`) and to `security-severity`. A new
-  `src/report/mod.rs` gives every finding a severity: a homoglyph typosquat
-  is critical, an edit-distance typosquat high, and a vulnerability takes its
-  OSV advisory's level (`cve::severity::assess`), defaulting to high when the
-  advisory is unrated.
-- **Tests:** `tests/sarif.rs` validates the output against the official
-  SARIF 2.1.0 JSON schema (vendored at
-  `tests/fixtures/sarif-schema-2.1.0.json`) with the `jsonschema` crate, and
-  checks the rule list, one result per finding, levels and locations. Unit
-  tests cover the severity rules, level mapping and line lookup.
-- **By:** OZILSOLAR
-- **Closes:** #78
+- **What:** Adds `parse_yarn_lock` in [`yarn.rs`](src/lockfile/yarn.rs) and
+  wires it into `parse_file` for `yarn.lock`. Reads each entry header
+  (`"name@^1.0.0", name@~1.1:`, including scoped names and several
+  specifiers per entry) and its `version "x.y.z"` field; each
+  `(name, version)` pair is returned once. `direct` and `dev` are `false`
+  because the format doesn't record them.
+- **Tests:** Unit tests over the new `tests/fixtures/yarn.lock` fixture
+  (scoped, multi-specifier and exact entries). Not run in this change.
+- **By:** soma-enyi
+- **Closes:** #62
 - **Status:** In review.
 
-### CLI — colored, severity-aware terminal output
+### scanner — pnpm-lock.yaml parser (v6 and v9)
 
-- **What:** Adds `src/report/text.rs`, the text renderer the `depradar` CLI
-  now uses: each finding is prefixed with its severity tag, colored with
-  `owo-colors` — `[CRITICAL]` bold red, `[HIGH]` red, `[MEDIUM]` yellow,
-  `[LOW]` dimmed. New `--color auto|always|never` flag (default `auto`:
-  color only when stdout is a terminal; reports written with `--output` are
-  never colored under `auto`). A non-empty `NO_COLOR` environment variable
-  turns color off regardless of `--color`, per <https://no-color.org>.
-- **Tests:** `tests/cli.rs` (`assert_cmd`) asserts that no ANSI escape codes
-  appear with `NO_COLOR=1` even under `--color always`, that `--color
-  always` does emit them, and that piped output is uncolored by default.
-  Unit tests cover the color decision and the plain/colored tags.
-- **By:** OZILSOLAR
-- **Closes:** #79
+- **What:** Adds `parse_pnpm_lock` in [`pnpm.rs`](src/lockfile/pnpm.rs),
+  wired into `parse_file` for `pnpm-lock.yaml`, and the `serde_yaml`
+  dependency (plus a `ParseError::Yaml` variant). Reads the `packages:`
+  section for both `/name@version` (v6) and `name@version` (v9) keys,
+  including scoped names; v6 peer-dependency suffixes such as
+  `(react@18.2.0)` are dropped. `dev` follows the v6 `dev:` field and is
+  `false` for v9, which doesn't record it; `direct` is always `false`.
+- **Tests:** Unit tests over new `pnpm-lock-v6.yaml` and
+  `pnpm-lock-v9.yaml` fixtures. Not run in this change; `Cargo.lock` is not
+  yet updated for `serde_yaml`.
+- **By:** soma-enyi
+- **Closes:** #63
 - **Status:** In review.
 
-### CLI — `--quiet` and `--verbose`
+### scanner — requirements.txt parser
 
-- **What:** `depradar -q/--quiet` prints only the findings (one line each,
-  with their severity tag) and the closing summary line, for terse CI logs.
-  `-v/--verbose` adds a "Dependencies checked" section listing every
-  distinct package and version scanned (direct or transitive) and a
-  "Timings" section with the wall-clock time of each stage (`parse`,
-  `typosquat`, `advisories`, `ignore`, plus the CLI's `severity` lookup) and
-  the total. Passing both is a usage error (exit 2). To support this,
-  `pipeline::Report` now carries `dependencies` and `timings`
-  (`Vec<StageTiming>`), filled in by `scan_lockfile`.
-- **Tests:** `assert_cmd` tests in `tests/cli.rs` for quiet output (exactly
-  the finding and summary lines), verbose output (every fixture dependency
-  and the stage timings are listed), and the quiet+verbose conflict. A unit
-  test covers timing formatting.
-- **By:** OZILSOLAR
-- **Closes:** #80
+- **What:** Adds `parse_requirements` and
+  `parse_requirements_with_warnings` in [`pypi.rs`](src/lockfile/pypi.rs),
+  wired into `parse_file` for `requirements*.txt`. `name==version` (and
+  `===`) pins are recorded; other specifiers (`>=`, `~=`, `==1.*`) and bare
+  names get `version: None`. Comments, blank lines, `--hash` options
+  (including `\` continuations), extras and environment markers are
+  ignored. `-r other.txt` includes are not followed and come back as
+  warnings from `parse_requirements_with_warnings`; other option lines
+  (`-e`, `--index-url`, ...) are skipped silently. All entries are
+  `direct: true`.
+- **Tests:** Unit tests for each line type. Not run in this change.
+- **By:** soma-enyi
+- **Closes:** #64
 - **Status:** In review.
 
-### CLI — fail the build above a severity threshold (`--fail-on`)
+### scanner — poetry.lock parser
 
-- **What:** `depradar --fail-on low|medium|high|critical|none` (default
-  `high`) makes the CLI usable as a CI gate: the run fails only if an
-  unsuppressed finding is at or above the chosen severity, and `none` never
-  fails on findings. Exit codes: `0` clean, `1` findings at or above the
-  threshold, `2` usage error or a scan that couldn't complete (unreadable or
-  malformed lockfile or `.depradarignore`, failed OSV lookup). The codes are
-  documented in `depradar --help` and in a new "Scanning a lockfile (CLI)"
-  section of the README, which also covers the other CLI options and a
-  GitHub Actions example that uploads the SARIF report.
-- **Tests:** `assert_cmd` tests in `tests/cli.rs` for each exit code: `0`
-  on a new clean fixture (`tests/fixtures/npm-clean/`), `1` under the
-  default threshold, every `--fail-on` level against a high-severity
-  finding, `2` for missing arguments, an unknown level, an unknown flag, a
-  missing lockfile and an unsupported file, plus a check that `--help`
-  lists the exit codes.
-- **By:** OZILSOLAR
-- **Closes:** #81
+- **What:** Adds `parse_poetry_lock` in [`pypi.rs`](src/lockfile/pypi.rs),
+  wired into `parse_file` for `poetry.lock`. Reads every `[[package]]`
+  entry (`name`, `version`, `category`/`groups`) with the `toml` crate and
+  applies PEP 503 name normalization (lowercase, runs of `-`, `_`, `.`
+  collapsed to `-`). `dev` is `true` for `category = "dev"` or for a
+  `groups` list without `main`; `direct` is always `false`.
+- **Tests:** Unit tests over the new `tests/fixtures/poetry.lock` fixture
+  (old `category` and new `groups` styles, name normalization). Not run in
+  this change.
+- **By:** soma-enyi
+- **Closes:** #65
 - **Status:** In review.

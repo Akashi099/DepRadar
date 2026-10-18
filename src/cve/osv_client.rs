@@ -19,7 +19,7 @@ pub const OSV_BATCH_LIMIT: usize = 1000;
 ///
 /// OSV's own ecosystem list is much larger, but the crawler only targets
 /// these three registries today; add variants here as more are wired up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Ecosystem {
     Npm,
     PyPI,
@@ -289,14 +289,11 @@ fn get_vulnerability_at(base_url: &str, id: &str) -> Result<OsvVulnerability, Os
     let response = reqwest::blocking::Client::new()
         .get(format!("{base_url}/v1/vulns/{id}"))
         .send()
+        .await
         .map_err(OsvClientError::Request)?;
 
-    let status = response.status();
-    if !status.is_success() {
-        return Err(OsvClientError::UnexpectedStatus(status));
-    }
-
-    response.json().map_err(OsvClientError::Decode)
+    check_status(response.status())?;
+    response.json().await.map_err(OsvClientError::Decode)
 }
 
 /// Queries OSV for many package versions at once via
