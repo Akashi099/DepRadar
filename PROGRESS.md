@@ -528,3 +528,24 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** iam-mercy
 - **Closes:** #105
 - **Status:** In review.
+
+### docs — finding severity model
+
+- **What:** Adds [`docs/severity.md`](docs/severity.md), the single place
+  defining what low, medium, high and critical mean in DepRadar. It
+  defines each level, gives a rated example per `FindingKind` (homoglyph
+  typosquat → critical, distance typosquat → high, vulnerability → its
+  advisory's level, unrated advisory → high) and per behavioral signal
+  (setup.py command execution → high, obfuscation/network → medium,
+  native binaries → low, new install script between versions → medium),
+  documents the CVSS v3 mapping (0.0–3.9 low, 4.0–6.9 medium, 7.0–8.9
+  high, 9.0–10.0 critical, per the CVSS v3.1 qualitative ratings) and
+  the label fallback, and explains how severity flows into `--fail-on`,
+  SARIF levels and `security-severity`, plus guidance for detector
+  authors. Linked from [README.md](README.md) (CLI section) and
+  [CONTRIBUTING.md](CONTRIBUTING.md) (PR checklist); all commands and
+  relative links verified.
+- **Tests:** N/A (documentation only).
+- **By:** iam-mercy
+- **Closes:** #106
+- **Status:** In review.
