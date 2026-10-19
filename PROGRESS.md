@@ -320,12 +320,11 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Closes:** N/A
 - **Status:** Merged.
 
-<<<<<<< HEAD
 ### typosquat scanner — crates.io popular-package dataset
 
 - **What:** Adds `data/popular-packages/crates-top1000.json`, the top 1000
   crates by recent (90-day) downloads from the crates.io API, taken on
-  2026-10-16, lowercased and sorted. `load_popular_packages()` now includes
+  2026-10-16, lowercased and ordered most-downloaded first. `load_popular_packages()` now includes
   it after the npm and PyPI lists, so Rust lookalikes (`serde_json`
   imitations, `tokio` lookalikes) are scored like everything else. A new
   `data/popular-packages/README.md` records each file's source and snapshot
@@ -371,8 +370,9 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
     for npm, [Top PyPI Packages](https://hugovk.dev/top-pypi-packages/) for
     PyPI, and the crates.io API sorted by recent downloads.
   - For each registry it keeps the top 1000 valid, distinct names (PEP 503
-    normalised for PyPI) and writes them lowercased and sorted, in the
-    existing two-space JSON format.
+    normalised for PyPI) and writes them lowercased in download order (the
+    scanner uses position as a popularity rank), in the existing two-space
+    JSON format.
   - It only rewrites a file whose content changed, so a second run leaves no
     diff.
   - `data/popular-packages/README.md` documents the sources, how to run the
@@ -387,7 +387,7 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** Austinaminu2
 - **Closes:** #40
 - **Status:** In review. Builds on #39 and #41.
-=======
+
 ### typosquat scanner — JSON-serializable `ScanResult`
 
 - **What:** `ScanResult` in `src/typosquat/scanner.rs` now derives
@@ -396,11 +396,151 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
   `distance_match` serializes as a `[name, distance]` array and an unset
   signal as `null`.
 - **Tests:** one test asserts the exact JSON for `expresss`
-  (`{"candidate":"expresss","distance_match":["express",1],"homoglyph_match":null}`).
+  (all signal fields plus `confidence`, e.g. `"distance_match":["express",1]`).
   A round-trip test serializes and deserializes three results (distance
   only, both signals, clean) through `serde_json` and checks each comes back
   unchanged.
 - **By:** Austinaminu2
 - **Closes:** #38
 - **Status:** In review.
->>>>>>> feat/38-scanresult-json
+
+### typosquat — top-N nearest matches
+
+- **What:** Adds `nearest_matches(candidate, dataset, n) -> Vec<(String, usize)>`
+  to [`distance.rs`](src/typosquat/distance.rs), returning up to `n` names
+  sorted by edit distance and then dataset order (a stable sort), so a
+  candidate equally close to two popular packages reports both.
+  `nearest_match` is now a thin wrapper (`n = 1`) and keeps its tie and
+  empty-dataset behavior.
+- **Tests:** not added in this change.
+- **By:** Maki
+- **Closes:** #36
+- **Status:** In review.
+
+### typosquat — BK-tree index for distance lookups
+
+- **What:** Adds [`bktree.rs`](src/typosquat/bktree.rs), a BK-tree over the
+  dataset keyed by `levenshtein_distance`, with
+  `BkTree::within(candidate, max) -> Vec<(&str, usize)>`. Searches only
+  descend into children whose edge distance is within `max` of the current
+  node's distance (triangle inequality). Results are sorted by distance and
+  then dataset order, so they match a brute-force scan. Duplicate names
+  are stored once, at their first position. `score_package` now uses a
+  tree built once and cached in a `OnceLock`, over a cached dataset
+  (`dataset::popular_packages()`). The public API is unchanged.
+- **Tests:** the property test and criterion benchmark from the issue are
+  not included yet.
+- **By:** Maki
+- **Closes:** #35
+- **Status:** In review.
+
+### typosquat — digit-for-letter swap detection
+
+- **What:** Adds a separate, opt-in normalization to
+  [`homoglyph.rs`](src/typosquat/homoglyph.rs): `normalize_digit_swaps`
+  folds `0→o`, `1→l`, `3→e`, `4→a`, `5→s`, and is not part of
+  `normalize_homoglyphs`. `digit_swap_impersonation` applies homoglyph
+  folding and then digit folding. It flags a name only if a digit was
+  actually swapped, the result is a popular package, and the name itself
+  isn't already in the dataset (so `boto3` and `h5py` aren't flagged, and
+  `i18n` is left alone because `8` isn't folded). The scanner reports it as
+  a new `ScanResult::digit_swap_match` with its own reason line:
+  `digit-for-letter swap impersonating popular package "lodash"`.
+- **Tests:** not added in this change.
+- **By:** Maki
+- **Closes:** #34
+- **Status:** In review.
+
+### typosquat — 0–100 confidence score
+
+- **What:** Adds `confidence: u8` to `ScanResult` in
+  [`scanner.rs`](src/typosquat/scanner.rs), computed by
+  `scanner::confidence`. The score has three parts: lookalike (50 if the
+  homoglyph or digit-swap signal fired), distance (`40 - 10 × distance`),
+  and popularity (5–20, from the new `dataset::popularity_rank`, which uses
+  each registry file's order). A clean name scores 0. The lookalike part is
+  worth more than distance plus popularity combined, so the ranking is
+  always both signals (75–100) > lookalike only (55–70) > distance only
+  (25–50). The doc comment documents the formula and gives worked examples
+  (`expresss` 40, full-width `requests` 65, `l0dash` 85, Cyrillic-`а`
+  `react` 100). `Display` now prints `likely typosquat (confidence N/100)`.
+- **Tests:** not added in this change.
+- **By:** Maki
+- **Closes:** #37
+- **Status:** In review.
+
+### scanner — yarn.lock (v1) parser
+
+- **What:** Adds `parse_yarn_lock` in [`yarn.rs`](src/lockfile/yarn.rs) and
+  wires it into `parse_file` for `yarn.lock`. Reads each entry header
+  (`"name@^1.0.0", name@~1.1:`, including scoped names and several
+  specifiers per entry) and its `version "x.y.z"` field; each
+  `(name, version)` pair is returned once. `direct` and `dev` are `false`
+  because the format doesn't record them.
+- **Tests:** Unit tests over the new `tests/fixtures/yarn.lock` fixture
+  (scoped, multi-specifier and exact entries). Not run in this change.
+- **By:** soma-enyi
+- **Closes:** #62
+- **Status:** In review.
+
+### scanner — pnpm-lock.yaml parser (v6 and v9)
+
+- **What:** Adds `parse_pnpm_lock` in [`pnpm.rs`](src/lockfile/pnpm.rs),
+  wired into `parse_file` for `pnpm-lock.yaml`, and the `serde_yaml`
+  dependency (plus a `ParseError::Yaml` variant). Reads the `packages:`
+  section for both `/name@version` (v6) and `name@version` (v9) keys,
+  including scoped names; v6 peer-dependency suffixes such as
+  `(react@18.2.0)` are dropped. `dev` follows the v6 `dev:` field and is
+  `false` for v9, which doesn't record it; `direct` is always `false`.
+- **Tests:** Unit tests over new `pnpm-lock-v6.yaml` and
+  `pnpm-lock-v9.yaml` fixtures. Not run in this change; `Cargo.lock` is not
+  yet updated for `serde_yaml`.
+- **By:** soma-enyi
+- **Closes:** #63
+- **Status:** In review.
+
+### scanner — requirements.txt parser
+
+- **What:** Adds `parse_requirements` and
+  `parse_requirements_with_warnings` in [`pypi.rs`](src/lockfile/pypi.rs),
+  wired into `parse_file` for `requirements*.txt`. `name==version` (and
+  `===`) pins are recorded; other specifiers (`>=`, `~=`, `==1.*`) and bare
+  names get `version: None`. Comments, blank lines, `--hash` options
+  (including `\` continuations), extras and environment markers are
+  ignored. `-r other.txt` includes are not followed and come back as
+  warnings from `parse_requirements_with_warnings`; other option lines
+  (`-e`, `--index-url`, ...) are skipped silently. All entries are
+  `direct: true`.
+- **Tests:** Unit tests for each line type. Not run in this change.
+- **By:** soma-enyi
+- **Closes:** #64
+- **Status:** In review.
+
+### scanner — poetry.lock parser
+
+- **What:** Adds `parse_poetry_lock` in [`pypi.rs`](src/lockfile/pypi.rs),
+  wired into `parse_file` for `poetry.lock`. Reads every `[[package]]`
+  entry (`name`, `version`, `category`/`groups`) with the `toml` crate and
+  applies PEP 503 name normalization (lowercase, runs of `-`, `_`, `.`
+  collapsed to `-`). `dev` is `true` for `category = "dev"` or for a
+  `groups` list without `main`; `direct` is always `false`.
+- **Tests:** Unit tests over the new `tests/fixtures/poetry.lock` fixture
+  (old `category` and new `groups` styles, name normalization). Not run in
+  this change.
+- **By:** soma-enyi
+- **Closes:** #65
+- **Status:** In review.
+
+### CLI — read package names from stdin
+
+- **What:** `depradar name -` now reads newline-separated package names from
+  stdin instead of scoring a package literally named `-`, so bulk checks can
+  be piped (`cat names.txt | depradar name -`). Blank lines and `#` comments
+  are skipped, and surrounding whitespace is trimmed. Text output prints one
+  result per name; `--format json` prints a single JSON array of results.
+- **Tests:** `assert_cmd` tests pipe three names (plus a comment and a blank
+  line) through `name -` in both text and JSON modes.
+- **By:** eeshasalaudeen734-creator
+- **Closes:** #82
+- **Status:** In review.
+

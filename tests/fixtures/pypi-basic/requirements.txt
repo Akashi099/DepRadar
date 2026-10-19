@@ -1,0 +1,5 @@
+# Direct requirements for a small Flask service.
+flask>=2.0
+requests==2.19.0
+reqeusts==1.0.0
+-r requirements-dev.txt

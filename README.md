@@ -57,6 +57,52 @@ flowchart LR
   bounty and its claims, holds no authority, and needs no wallet. Run it
   with `cd frontend && npm ci && npm run dev`.
 
+## Scanning a lockfile (CLI)
+
+The `depradar` binary scans a lockfile for typosquats and known
+vulnerabilities:
+
+```sh
+cargo run --bin depradar -- path/to/package-lock.json
+```
+
+Useful options (run `depradar --help` for the full list):
+
+| Option | Effect |
+|---|---|
+| `--format text\|sarif` | `sarif` writes SARIF 2.1.0 for GitHub code scanning |
+| `-o, --output <FILE>` | Write the report to a file instead of stdout |
+| `--color auto\|always\|never` | Color severity labels (off when piped, or when `NO_COLOR` is set) |
+| `-q, --quiet` / `-v, --verbose` | Findings and summary only / also every dependency checked and timing per stage |
+| `--fail-on low\|medium\|high\|critical\|none` | Severity at which the run fails (default `high`) |
+| `--offline` | Skip the OSV lookup (typosquat checks only) |
+
+Findings accepted in a `.depradarignore` next to the lockfile are reported
+as suppressed and never fail the run.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | No finding at or above the `--fail-on` level |
+| `1` | At least one finding at or above the `--fail-on` level |
+| `2` | Usage error, or the scan couldn't complete (unreadable or malformed lockfile or `.depradarignore`, failed OSV lookup) |
+
+To use DepRadar as a CI gate and show its findings in GitHub's Security
+tab:
+
+```yaml
+- name: DepRadar
+  run: cargo run --release --bin depradar -- --format sarif --output depradar.sarif --fail-on high package-lock.json
+- name: Upload SARIF
+  if: always()
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: depradar.sarif
+```
+
+The upload job needs the `security-events: write` permission.
+
 ## Live on Testnet
 
 The router contract is deployed and has completed a full bounty lifecycle

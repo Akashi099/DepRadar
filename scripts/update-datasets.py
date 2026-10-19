@@ -3,7 +3,8 @@
 
 Fetches the current most-downloaded packages for npm, PyPI and crates.io from
 public download-stat sources and rewrites each `<registry>-top1000.json` as a
-sorted, de-duplicated JSON array of lowercase names. A file is only rewritten
+de-duplicated JSON array of lowercase names, most-downloaded first (the
+typo-squat scanner uses that order as a popularity rank). A file is only rewritten
 when its content changes, so running this twice in a row leaves no diff.
 
 Usage:
@@ -90,7 +91,7 @@ REGISTRIES = {
 
 
 def top_names(ranked, is_valid, identity):
-    """The TOP_N highest-ranked valid, distinct names, sorted alphabetically."""
+    """The TOP_N highest-ranked valid, distinct names, most-downloaded first."""
     chosen = {}
     skipped = []
     for raw in ranked:
@@ -105,7 +106,7 @@ def top_names(ranked, is_valid, identity):
         sys.exit(f"source only yielded {len(chosen)} valid names, expected {TOP_N}")
     if skipped:
         print(f"  skipped {len(skipped)} invalid name(s): {', '.join(skipped[:5])}")
-    return sorted(chosen.values())
+    return list(chosen.values())
 
 
 def update(registry):

@@ -3,8 +3,9 @@
 Reference lists of widely-used package names, one JSON file per registry.
 The typosquat scanner (`src/typosquat/`) compares a candidate name against
 these to decide whether it is imitating something popular. Each file is a
-flat JSON array of 1000 lowercase names, sorted alphabetically with no
-duplicates, embedded into the binary at compile time by
+flat JSON array of 1000 lowercase names with no duplicates, ordered
+most-downloaded first (the scanner uses position as a popularity rank),
+embedded into the binary at compile time by
 `src/typosquat/dataset.rs`.
 
 | File | Registry | Source | Ranked by | Snapshot date |
@@ -31,7 +32,7 @@ For each registry the script:
    registry, and merges spellings the registry treats as the same package
    (for PyPI, after [PEP 503](https://peps.python.org/pep-0503/)
    normalisation);
-3. keeps the top 1000 and writes them sorted, as a JSON array with two-space
+3. keeps the top 1000 in rank order and writes them as a JSON array with two-space
    indentation and a trailing newline.
 
 A file is only rewritten when its contents change, and the script prints how
