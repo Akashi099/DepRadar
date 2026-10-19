@@ -70,15 +70,57 @@ Useful options (run `depradar --help` for the full list):
 
 | Option | Effect |
 |---|---|
-| `--format text\|sarif` | `sarif` writes SARIF 2.1.0 for GitHub code scanning |
-| `-o, --output <FILE>` | Write the report to a file instead of stdout |
-| `--color auto\|always\|never` | Color severity labels (off when piped, or when `NO_COLOR` is set) |
-| `-q, --quiet` / `-v, --verbose` | Findings and summary only / also every dependency checked and timing per stage |
-| `--fail-on low\|medium\|high\|critical\|none` | Severity at which the run fails (default `high`) |
+| `--format text\|json` | Output format; `json` writes a single machine-readable document |
+| `--fail-on low\|medium\|high\|critical\|none` | Severity at which the run exits 1 (default `high`; overrides `depradar.toml`) |
+| `--exclude <GLOB>` | Skip lockfiles matching the pattern (may be repeated; overrides `depradar.toml`) |
+| `--ecosystem <ECO>` | Restrict to one ecosystem (may be repeated; overrides `depradar.toml`) |
 | `--offline` | Skip the OSV lookup (typosquat checks only) |
 
 Findings accepted in a `.depradarignore` next to the lockfile are reported
 as suppressed and never fail the run.
+
+### Project config file (`depradar.toml`)
+
+Teams that run the same flags on every CI run can put them in a
+`depradar.toml` at the root of their repository. When the file is present,
+its values are used as defaults. **CLI flags always override the file**, and
+the file always overrides the built-in defaults.
+
+```toml
+# depradar.toml
+
+# Severity level at which the run exits with code 1.
+# Accepted values: "low", "medium", "high", "critical", "none"
+# Default: "high"
+fail_on = "high"
+
+# Output format for the scan command.
+# Accepted values: "text", "json"
+# Default: "text"
+format = "text"
+
+# Glob patterns for lockfile paths to skip.
+# Patterns are matched against the full path of each lockfile found.
+# `*` matches any sequence of non-separator characters; `**` matches
+# any sequence including path separators.
+# Default: [] (nothing excluded)
+exclude = ["vendor/**", "third_party/**", "node_modules/**"]
+
+# Restrict scanning to these ecosystems only.
+# Accepted values: "npm", "pypi", "cargo", "go", "maven", "rubygems", "packagist"
+# Default: [] (all ecosystems scanned)
+ecosystems = ["npm", "pypi"]
+```
+
+All keys are optional — an empty `depradar.toml` is valid and just uses
+built-in defaults. Unknown keys are rejected with a parse error.
+
+| Key | Type | Accepted values | Default |
+|---|---|---|---|
+| `fail_on` | string | `low`, `medium`, `high`, `critical`, `none` | `high` |
+| `format` | string | `text`, `json` | `text` |
+| `exclude` | array of strings | glob patterns | `[]` |
+| `ecosystems` | array of strings | `npm`, `pypi`, `cargo`, `go`, `maven`, `rubygems`, `packagist` | `[]` (all) |
 
 ### Exit codes
 
@@ -182,6 +224,7 @@ verified, with the full trail auditable by anyone.
 | Testnet read client — CLI wrapper around `get_bounty` / `get_claim` against the live contract (`client/`) | [#9](https://github.com/DepRadarOrg/DepRadar/pull/9) |
 | OSV API client — `query_osv(package, ecosystem, version)` against [osv.dev](https://osv.dev) (`src/cve/osv_client.rs`) | [#10](https://github.com/DepRadarOrg/DepRadar/pull/10) |
 | Combined typosquat scoring API — `score_package()` merges Levenshtein + homoglyph signals; `cargo run --bin scan` CLI (`src/typosquat/scanner.rs`) | [#11](https://github.com/DepRadarOrg/DepRadar/pull/11) |
+| Project config file — `depradar.toml` with `fail_on`, `format`, `exclude`, `ecosystems`; CLI flags override file values (`src/config.rs`) | [#85](https://github.com/DepRadarOrg/DepRadar/issues/85) |
 
 ### Open
 

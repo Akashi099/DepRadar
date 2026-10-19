@@ -459,3 +459,47 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** eeshasalaudeen734-creator
 - **Closes:** #82
 - **Status:** In review.
+
+### CLI — project config file (`depradar.toml`)
+
+- **What:** Adds `src/config.rs` with a `ProjectConfig` struct that `depradar
+  scan` loads from `depradar.toml` in the working directory. The file supports
+  four keys:
+  - `fail_on` — severity threshold for a non-zero exit code
+    (`low`/`medium`/`high`/`critical`/`none`; default `high`).
+  - `format` — output format (`text`/`json`; default `text`).
+  - `exclude` — array of glob patterns for lockfile paths to skip.
+  - `ecosystems` — array of ecosystems to restrict scanning to (`npm`,
+    `pypi`, `cargo`, `go`, `maven`, `rubygems`, `packagist`; default: all).
+
+  Loading is strictly opt-in: if no `depradar.toml` exists the built-in
+  defaults are unchanged. An existing but malformed file exits with code 2 and
+  a clear error pointing to the file. Unknown keys are rejected.
+
+  Precedence is: **built-in defaults ← `depradar.toml` ← CLI flags**. CLI
+  flags always win, so existing scripts and one-off commands are unaffected.
+  The `--fail-on`, `--exclude`, and `--ecosystem` flags are new on the CLI
+  (previously undocumented/unimplemented), and `--format` is now optional
+  rather than defaulting on the struct level, giving the file a chance to
+  provide the default.
+
+- **Tests:**
+  - Unit tests in `src/config.rs`: `FailOn` ordering, round-trip
+    `FromStr`/`Display` for all three enums, full-config TOML parse,
+    empty-file parse, unknown-key rejection, invalid enum value rejection,
+    `load_project_config` returning `None` when absent, loading from a
+    directory, and error on malformed TOML.
+  - Integration tests in `tests/cli.rs`: config file format setting used
+    when no flag is passed; CLI `--format` overrides the file; `fail_on =
+    "none"` exits 0 with findings; `--fail-on high` overrides `fail_on =
+    "none"` in the file; `exclude` pattern skips a path; CLI `--exclude`
+    overrides the file; no config file uses defaults; invalid config exits 2
+    with a message mentioning `depradar.toml`.
+  - `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test --workspace`
+    all pass.
+- **Docs:** README updated with a `depradar.toml` section, a key reference
+  table, and an updated CLI options table reflecting the newly implemented
+  flags.
+- **By:** david-tanko
+- **Closes:** #85
+- **Status:** Merged.
