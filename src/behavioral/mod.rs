@@ -1,0 +1,66 @@
+//! Behavioral analysis of unpacked packages.
+//!
+//! Where the typosquat and CVE modules reason about a package's *name* and
+//! version, the detectors here reason about its *contents*: what runs when
+//! it's installed ([`setup_py`]).
+//!
+//! Behavioral findings are their own type ([`BehavioralFinding`]), not
+//! [`Finding`](crate::model::Finding)s — they describe files inside one
+//! package rather than a dependency in a lockfile. Each carries a
+//! [`Severity`] so reports can rank them the same way as lockfile findings;
+//! the level definitions live in `docs/severity.md`.
+
+pub mod setup_py;
+
+use std::fmt;
+
+use crate::cve::severity::Severity;
+
+/// One suspicious thing a behavioral detector found inside a package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BehavioralFinding {
+    /// Package-relative path of the file the finding is about, using `/`
+    /// separators (e.g. `setup.py`, `vendor/helper.dll`).
+    pub file: String,
+    /// 1-based line number, when the detector works on text (e.g.
+    /// [`setup_py`]); `None` for whole-file checks such as [`binaries`].
+    pub line: Option<usize>,
+    /// How serious the finding is; see `docs/severity.md`.
+    pub severity: Severity,
+    /// Human-readable description, e.g. `subprocess call`.
+    pub message: String,
+}
+
+impl fmt::Display for BehavioralFinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.line {
+            Some(line) => write!(f, "{}:{line}: ", self.file)?,
+            None => write!(f, "{}: ", self.file)?,
+        }
+        write!(f, "{}", self.message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finding_display_includes_file_line_and_message() {
+        let finding = BehavioralFinding {
+            file: "setup.py".to_string(),
+            line: Some(3),
+            severity: Severity::High,
+            message: "subprocess call".to_string(),
+        };
+        assert_eq!(finding.to_string(), "setup.py:3: subprocess call");
+
+        let whole_file = BehavioralFinding {
+            file: "bin/x".to_string(),
+            line: None,
+            severity: Severity::Low,
+            message: "native binary".to_string(),
+        };
+        assert_eq!(whole_file.to_string(), "bin/x: native binary");
+    }
+}

@@ -459,3 +459,27 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** eeshasalaudeen734-creator
 - **Closes:** #82
 - **Status:** In review.
+
+### behavioral — suspicious-call scan for Python `setup.py`
+
+- **What:** Adds the `behavioral` analysis module (`src/behavioral/`) and
+  its first detector, `setup_py::scan_setup_py`
+  ([`setup_py.rs`](src/behavioral/setup_py.rs)). PyPI sdists execute
+  `setup.py` at install time, making it the direct analogue of npm
+  install scripts. The scanner is line-based (no Python AST): it strips
+  `#` comments (quote-aware), then flags `subprocess` usage (calls and
+  imports), `os.system(...)`, `exec(`/`eval(`, `base64.b64decode(...)`
+  (including direct `b64decode` imports), and `urllib`/`requests` calls —
+  each emitted as a `BehavioralFinding` with the 1-based line number.
+  Command-execution signals rate **high**; obfuscation and network calls
+  rate **medium** (see [docs/severity.md](docs/severity.md)). Dependency
+  *names* like `install_requires=['requests']` are not calls and don't
+  trigger.
+- **Tests:** A normal setuptools `setup.py` fixture scans clean; a
+  malicious sample flags every call kind at the right line number
+  (commented-out `eval` excluded); unit tests cover trailing comments,
+  `#` inside strings, lookalike identifiers (`peval`, `os.system = ...`),
+  per-line dedupe, and the direct-`b64decode` import.
+- **By:** iam-mercy
+- **Closes:** #103
+- **Status:** In review.
