@@ -14,6 +14,7 @@ Options:
 
 Examples:
   depradar name expresss                 Check one package name for typosquat signals
+  cat names.txt | depradar name -        Read newline-separated names from stdin
   depradar scan package-lock.json        Scan a lockfile for typosquats and known CVEs
   depradar scan .                        Scan every lockfile in a directory or monorepo
   depradar scan . --offline              Typosquat checks only, no OSV lookup

@@ -47,6 +47,7 @@ pub fn parse_pipfile_lock(contents: &str) -> Result<Vec<Dependency>, ParseError>
             ecosystem: Ecosystem::PyPI,
             direct: false,
             dev,
+            path: Vec::new(),
         })
         .collect())
 }
@@ -92,6 +93,7 @@ pub fn parse_requirements_with_warnings(
         }
         if let Some((name, version)) = parse_requirement(&line) {
             deps.push(Dependency {
+                path: vec![name.clone()],
                 name,
                 version,
                 ecosystem: Ecosystem::PyPI,
@@ -215,6 +217,7 @@ pub fn parse_poetry_lock(contents: &str) -> Result<Vec<Dependency>, ParseError> 
                 ecosystem: Ecosystem::PyPI,
                 direct: false,
                 dev,
+                path: Vec::new(),
             }
         })
         .collect())
@@ -358,7 +361,10 @@ mod tests {
             .iter()
             .map(|d| (d.name.as_str(), d.version.as_deref()))
             .collect();
-        assert_eq!(got, vec![("requests", Some("2.31.0")), ("flask", Some("3.0.0"))]);
+        assert_eq!(
+            got,
+            vec![("requests", Some("2.31.0")), ("flask", Some("3.0.0"))]
+        );
     }
 
     #[test]
@@ -430,7 +436,10 @@ mod tests {
     #[test]
     fn pep_503_normalization() {
         assert_eq!(normalize_pypi_name("Flask-Cors"), "flask-cors");
-        assert_eq!(normalize_pypi_name("typing_extensions"), "typing-extensions");
+        assert_eq!(
+            normalize_pypi_name("typing_extensions"),
+            "typing-extensions"
+        );
         assert_eq!(normalize_pypi_name("ruamel.yaml"), "ruamel-yaml");
         assert_eq!(normalize_pypi_name("Foo.-_Bar"), "foo-bar");
         assert_eq!(normalize_pypi_name("requests"), "requests");

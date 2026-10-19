@@ -3,6 +3,7 @@
 //!
 //! Run `depradar --help` for usage.
 
+use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -17,6 +18,7 @@ use deprader::typosquat::scanner::{score_package, ScanResult};
 const EXAMPLES: &str = "\
 Examples:
   depradar name expresss                 Check one package name for typosquat signals
+  cat names.txt | depradar name -        Read newline-separated names from stdin
   depradar scan package-lock.json        Scan a lockfile for typosquats and known CVEs
   depradar scan .                        Scan every lockfile in a directory or monorepo
   depradar scan . --offline              Typosquat checks only, no OSV lookup
@@ -71,14 +73,7 @@ enum Format {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Name { package } => {
-            let result = score_package(&package);
-            match cli.format {
-                Format::Text => println!("{result}"),
-                Format::Json => print_json(&score_json(&result)),
-            }
-            ExitCode::SUCCESS
-        }
+        Command::Name { package } => run_name(&package, cli.format),
         Command::Scan { path, offline } => match scan(&path, offline) {
             Ok(scanned) => {
                 match (cli.format, &scanned) {
@@ -101,6 +96,62 @@ fn main() -> ExitCode {
             }
         },
     }
+}
+
+/// Scores one package name, or every package name read from stdin when
+/// `package` is `-`.
+fn run_name(package: &str, format: Format) -> ExitCode {
+    if package != "-" {
+        let result = score_package(package);
+        match format {
+            Format::Text => println!("{result}"),
+            Format::Json => print_json(&score_json(&result)),
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let names = match read_names() {
+        Ok(names) => names,
+        Err(message) => {
+            eprintln!("error: {message}");
+            if format == Format::Json {
+                print_json(&json!({ "error": message }));
+            }
+            return ExitCode::from(2);
+        }
+    };
+
+    match format {
+        Format::Text => {
+            for name in &names {
+                println!("{}", score_package(name));
+            }
+        }
+        Format::Json => {
+            let results = names
+                .iter()
+                .map(|name| score_json(&score_package(name)))
+                .collect::<Vec<_>>();
+            print_json(&Value::Array(results));
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Reads one package name per line from stdin, skipping blank lines and
+/// `#` comments.
+fn read_names() -> Result<Vec<String>, String> {
+    let stdin = io::stdin();
+    let mut names = Vec::new();
+    for line in stdin.lock().lines() {
+        let line = line.map_err(|err| format!("failed to read stdin: {err}"))?;
+        let name = line.trim();
+        if name.is_empty() || name.starts_with('#') {
+            continue;
+        }
+        names.push(name.to_string());
+    }
+    Ok(names)
 }
 
 /// What `depradar scan` scanned: one lockfile, or a directory tree.
@@ -166,6 +217,10 @@ fn ecosystem_name(ecosystem: Ecosystem) -> &'static str {
         Ecosystem::Npm => "npm",
         Ecosystem::PyPI => "PyPI",
         Ecosystem::CratesIo => "crates.io",
+        Ecosystem::Go => "Go",
+        Ecosystem::Maven => "Maven",
+        Ecosystem::RubyGems => "RubyGems",
+        Ecosystem::Packagist => "Packagist",
     }
 }
 
@@ -180,6 +235,9 @@ fn score_json(result: &ScanResult) -> Value {
             .map(|(name, distance)| json!({ "name": name, "distance": distance })),
         "homoglyph_match": result.homoglyph_match,
         "digit_swap_match": result.digit_swap_match,
+        "keyboard_typo": result.keyboard_typo,
+        "scope_confusion": result.scope_confusion,
+        "combosquat": result.combosquat,
     })
 }
 

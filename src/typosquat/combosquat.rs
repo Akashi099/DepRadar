@@ -52,7 +52,10 @@ pub fn combosquat(candidate: &str, dataset: &[String]) -> Option<String> {
     let mut best: Option<&String> = None;
     for first in 0..tokens.len() {
         for last in first..tokens.len() {
-            let rest_is_bait = tokens[..first].iter().chain(&tokens[last + 1..]).all(is_bait);
+            let rest_is_bait = tokens[..first]
+                .iter()
+                .chain(&tokens[last + 1..])
+                .all(is_bait);
             let has_rest = first > 0 || last + 1 < tokens.len();
             if !rest_is_bait || !has_rest {
                 continue;

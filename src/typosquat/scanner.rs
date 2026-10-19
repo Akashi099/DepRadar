@@ -12,8 +12,12 @@ use std::fmt;
 use std::sync::OnceLock;
 
 use super::bktree::BkTree;
+use super::combosquat::combosquat;
 use super::dataset::{popular_packages, popularity_rank};
 use super::homoglyph::{digit_swap_impersonation, homoglyph_impersonation};
+use super::keyboard::keyboard_typo;
+use super::normalize::normalize_name;
+use super::scope::scope_confusion;
 
 /// Maximum edit distance from a popular package name that counts as
 /// "suspiciously close" rather than coincidental, scaled by the length (in
@@ -47,7 +51,7 @@ pub struct ScanResult {
     /// The name that was scored, as given by the caller.
     pub candidate: String,
     /// Set when the nearest popular package is within
-    /// [`DISTANCE_THRESHOLD`] edits (and not an exact match): the matched
+    /// [`threshold_for`] edits (and not an exact match): the matched
     /// name and the edit distance to it.
     pub distance_match: Option<(String, usize)>,
     /// Set when [`homoglyph_impersonation`] found that the candidate, once
@@ -58,6 +62,18 @@ pub struct ScanResult {
     /// lookalike digits (`0`, `1`, `3`, `4`, `5`) are folded back to letters,
     /// is a popular package: the matched name.
     pub digit_swap_match: Option<String>,
+    /// True when the distance match is a single substitution of a key
+    /// adjacent on a QWERTY keyboard ([`keyboard_typo`]) — the most likely
+    /// accidental install. Reported as an extra reason only; it does not
+    /// change whether the candidate is flagged.
+    pub keyboard_typo: bool,
+    /// Set when [`scope_confusion`] found that the candidate imitates a
+    /// popular scoped package by misspelling or dropping its scope
+    /// (`@typess/node`, `types-node`): the imitated package.
+    pub scope_confusion: Option<String>,
+    /// Set when [`combosquat`] found that the candidate is a popular package
+    /// name with bait words attached (`lodash-utils`): the popular package.
+    pub combosquat: Option<String>,
     /// How likely the candidate is a typosquat, from 0 (no signal) to 100.
     /// See [`confidence`] for the formula.
     pub confidence: u8,
@@ -69,6 +85,8 @@ impl ScanResult {
         self.distance_match.is_some()
             || self.homoglyph_match.is_some()
             || self.digit_swap_match.is_some()
+            || self.scope_confusion.is_some()
+            || self.combosquat.is_some()
     }
 }
 
@@ -107,6 +125,18 @@ impl fmt::Display for ScanResult {
                 "\n  - digit-for-letter swap impersonating popular package \"{name}\""
             )?;
         }
+        if let Some(name) = &self.scope_confusion {
+            write!(
+                f,
+                "\n  - scope confusion with popular scoped package \"{name}\""
+            )?;
+        }
+        if let Some(name) = &self.combosquat {
+            write!(
+                f,
+                "\n  - combosquat of popular package \"{name}\" with bait words"
+            )?;
+        }
         Ok(())
     }
 }
@@ -117,7 +147,7 @@ impl fmt::Display for ScanResult {
 ///
 /// | Part        | Points                                                        |
 /// |-------------|---------------------------------------------------------------|
-/// | lookalike   | 50 if the homoglyph or digit-swap signal fired, else 0        |
+/// | lookalike   | 50 if a non-distance signal fired (homoglyph, digit swap, scope confusion or combosquat), else 0 |
 /// | distance    | `40 - 10 * distance` (30 at distance 1, 20 at 2) if the distance signal fired, else 0 |
 /// | popularity  | by the best [`popularity_rank`] among the matched targets: 20 for rank < 10, 15 for < 100, 10 for < 500, 5 otherwise |
 ///
@@ -144,8 +174,13 @@ pub fn confidence(
     distance_match: Option<&(String, usize)>,
     homoglyph_match: Option<&str>,
     digit_swap_match: Option<&str>,
+    scope_confusion: Option<&str>,
+    combosquat: Option<&str>,
 ) -> u8 {
-    let lookalike = homoglyph_match.or(digit_swap_match);
+    let lookalike = homoglyph_match
+        .or(digit_swap_match)
+        .or(scope_confusion)
+        .or(combosquat);
     if distance_match.is_none() && lookalike.is_none() {
         return 0;
     }
@@ -159,6 +194,8 @@ pub fn confidence(
         .into_iter()
         .chain(homoglyph_match)
         .chain(digit_swap_match)
+        .chain(scope_confusion)
+        .chain(combosquat)
         .filter_map(popularity_rank)
         .min();
     let popularity_points: usize = match best_rank {
@@ -184,22 +221,31 @@ fn popular_index() -> &'static BkTree<'static> {
 /// reused afterwards, so callers only need a name.
 pub fn score_package(name: &str) -> ScanResult {
     let dataset = popular_packages();
+    let normalized = normalize_name(name);
 
     // Results are sorted by distance, then dataset order, so the first hit is
     // what a linear `nearest_match` scan would return. An exact match
     // (distance 0) is the real package and suppresses the signal.
+    let threshold = threshold_for(normalized.chars().count());
     let distance_match = popular_index()
-        .within(name, DISTANCE_THRESHOLD)
+        .within(&normalized, threshold)
         .first()
         .filter(|&&(_, distance)| distance > 0)
         .map(|&(nearest, distance)| (nearest.to_string(), distance));
 
-    let homoglyph_match = homoglyph_impersonation(name, dataset);
-    let digit_swap_match = digit_swap_impersonation(name, dataset);
+    let homoglyph_match = homoglyph_impersonation(&normalized, dataset);
+    let digit_swap_match = digit_swap_impersonation(&normalized, dataset);
+    let keyboard_typo = distance_match
+        .as_ref()
+        .is_some_and(|(matched, _)| keyboard_typo(&normalized, matched));
+    let scope_confusion = scope_confusion(&normalized, dataset);
+    let combosquat = combosquat(&normalized, dataset);
     let confidence = confidence(
         distance_match.as_ref(),
         homoglyph_match.as_deref(),
         digit_swap_match.as_deref(),
+        scope_confusion.as_deref(),
+        combosquat.as_deref(),
     );
 
     ScanResult {
@@ -207,6 +253,9 @@ pub fn score_package(name: &str) -> ScanResult {
         distance_match,
         homoglyph_match,
         digit_swap_match,
+        keyboard_typo,
+        scope_confusion,
+        combosquat,
         confidence,
     }
 }
@@ -287,7 +336,9 @@ mod tests {
         let result = score_package("reqiests");
         assert_eq!(result.distance_match, Some(("requests".to_string(), 1)));
         assert!(result.keyboard_typo);
-        assert!(result.to_string().contains("adjacent-key typo of \"requests\""));
+        assert!(result
+            .to_string()
+            .contains("adjacent-key typo of \"requests\""));
     }
 
     #[test]
@@ -325,7 +376,9 @@ mod tests {
         let result = score_package("lodash-utils");
         assert_eq!(result.combosquat.as_deref(), Some("lodash"));
         assert!(result.is_likely_typosquat());
-        assert!(result.to_string().contains("combosquat of popular package \"lodash\""));
+        assert!(result
+            .to_string()
+            .contains("combosquat of popular package \"lodash\""));
     }
 
     #[test]

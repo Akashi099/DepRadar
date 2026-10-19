@@ -202,7 +202,10 @@ fn ignore_file_suppresses_matching_findings_until_they_expire() {
     assert!(!active.has_findings(), "findings: {:#?}", active.findings);
     assert_eq!(active.suppressed.len(), 1);
     assert_eq!(active.suppressed[0].finding.package, "lodash");
-    assert_eq!(active.suppressed[0].reason, "Only reachable from build tooling");
+    assert_eq!(
+        active.suppressed[0].reason,
+        "Only reachable from build tooling"
+    );
     assert_eq!(active.summary.suppressed, 1);
     assert_eq!(active.summary.vulnerabilities, 0);
     assert!(active.to_string().contains("Suppressed (1):"));
@@ -212,7 +215,10 @@ fn ignore_file_suppresses_matching_findings_until_they_expire() {
     assert!(expired.suppressed.is_empty());
     assert_eq!(expired.summary.vulnerabilities, 1);
     assert!(
-        expired.warnings.iter().any(|w| w.contains("expired on 2026-12-31")),
+        expired
+            .warnings
+            .iter()
+            .any(|w| w.contains("expired on 2026-12-31")),
         "warnings: {:#?}",
         expired.warnings
     );

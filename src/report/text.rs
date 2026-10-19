@@ -102,13 +102,21 @@ fn write_report(
     )?;
 
     if verbose {
-        writeln!(out, "\nDependencies checked ({}):", report.dependencies.len())?;
+        writeln!(
+            out,
+            "\nDependencies checked ({}):",
+            report.dependencies.len()
+        )?;
         for dependency in &report.dependencies {
             write!(out, "  - {}", dependency.name)?;
             if let Some(version) = &dependency.version {
                 write!(out, "@{version}")?;
             }
-            let scope = if dependency.direct { "direct" } else { "transitive" };
+            let scope = if dependency.direct {
+                "direct"
+            } else {
+                "transitive"
+            };
             writeln!(out, " [{scope}]")?;
         }
     }

@@ -61,7 +61,11 @@ impl<'a> BkTree<'a> {
             if distance == 0 {
                 return; // duplicate: keep the earlier entry
             }
-            match self.nodes[current].children.iter().find(|&&(edge, _)| edge == distance) {
+            match self.nodes[current]
+                .children
+                .iter()
+                .find(|&&(edge, _)| edge == distance)
+            {
                 Some(&(_, child)) => current = child,
                 None => {
                     let child = self.nodes.len();

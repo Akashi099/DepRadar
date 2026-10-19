@@ -1,27 +1,96 @@
-//! Shared data models used across scanners.
-//!
-//! Lockfile parsers ([`crate::lockfile`]) all produce [`Dependency`] values so
-//! the typosquat and CVE signals can run over any project the same way,
-//! regardless of which registry or lockfile format it came from.
+//! Shared types for scanning a project's dependencies: what a lockfile
+//! parser extracts ([`Dependency`]) and what the scanner reports about it
+//! ([`Finding`]).
+
+use std::fmt;
 
 pub use crate::cve::osv_client::Ecosystem;
 
-/// One package a project depends on, as read from a lockfile or manifest.
+/// One installed package as recorded in a lockfile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dependency {
-    /// Package name as the registry knows it (e.g. `@angular/core`,
-    /// `requests`, `serde`).
+    /// Package name as the registry knows it (e.g. `lodash`, `@babel/core`,
+    /// `requests`).
     pub name: String,
-    /// Resolved version, when the source pins one. Manifests such as
-    /// `package.json` only carry version ranges, so this is `None` there.
+    /// The exact pinned version, if the lockfile records one. Unpinned
+    /// entries (e.g. `flask>=2.0` in a `requirements.txt`) are still checked
+    /// for typosquatting but can't be matched against OSV.
     pub version: Option<String>,
-    /// Registry the package is published to.
     pub ecosystem: Ecosystem,
-    /// `true` when the project declares the package itself, rather than it
-    /// being pulled in by another dependency. Formats that don't record the
-    /// distinction leave this `false`.
+    /// True if the project depends on this package itself (it's listed in
+    /// the project manifest), false if it was only pulled in by another
+    /// dependency.
     pub direct: bool,
-    /// `true` for development-only dependencies (`devDependencies`, Pipenv's
-    /// `develop` section, ...).
+    /// True for development-only dependencies.
     pub dev: bool,
+    /// The shortest chain of packages that pulls this one in, starting from
+    /// the project and ending with this package, e.g.
+    /// `["my-app", "webpack", "old-lib"]`. Formats with no project root
+    /// (`requirements.txt`) start at the dependency itself. Empty if the
+    /// lockfile doesn't connect the package to the project.
+    pub path: Vec<String>,
+}
+
+/// What the scanner found wrong with a dependency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FindingKind {
+    /// The name looks like an imitation of a popular package. The two fields
+    /// mirror [`ScanResult`](crate::typosquat::scanner::ScanResult): at least
+    /// one is set.
+    Typosquat {
+        distance_match: Option<(String, usize)>,
+        homoglyph_match: Option<String>,
+    },
+    /// OSV reports a known vulnerability affecting this exact version.
+    Vulnerability { advisory_id: String },
+}
+
+/// A single problem with a single dependency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    pub package: String,
+    pub version: Option<String>,
+    pub ecosystem: Ecosystem,
+    /// Whether the affected package is a direct or transitive dependency;
+    /// see [`Dependency::direct`].
+    pub direct: bool,
+    /// How the affected package is reached; see [`Dependency::path`].
+    pub path: Vec<String>,
+    pub kind: FindingKind,
+}
+
+impl fmt::Display for Finding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.version {
+            Some(version) => write!(f, "{}@{}", self.package, version)?,
+            None => write!(f, "{}", self.package)?,
+        }
+        if self.direct {
+            write!(f, " [direct]")?;
+        } else if self.path.is_empty() {
+            write!(f, " [transitive]")?;
+        } else {
+            write!(f, " [transitive via {}]", self.path.join(" > "))?;
+        }
+
+        match &self.kind {
+            FindingKind::Typosquat {
+                distance_match,
+                homoglyph_match,
+            } => {
+                write!(f, ": likely typosquat (")?;
+                let mut reasons = Vec::new();
+                if let Some((name, distance)) = distance_match {
+                    reasons.push(format!("edit distance {distance} from \"{name}\""));
+                }
+                if let Some(name) = homoglyph_match {
+                    reasons.push(format!("homoglyph impersonation of \"{name}\""));
+                }
+                write!(f, "{})", reasons.join("; "))
+            }
+            FindingKind::Vulnerability { advisory_id } => {
+                write!(f, ": known vulnerability {advisory_id}")
+            }
+        }
+    }
 }

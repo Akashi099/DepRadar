@@ -228,7 +228,8 @@ impl IgnoreFile {
                     ),
                 ));
             }
-            let value = parse_value(value.trim()).map_err(|message| parse_error(line_no, message))?;
+            let value =
+                parse_value(value.trim()).map_err(|message| parse_error(line_no, message))?;
             if entry.fields.insert(key.to_string(), value).is_some() {
                 return Err(parse_error(line_no, format!("duplicate key `{key}`")));
             }
@@ -365,7 +366,10 @@ impl RawEntry {
             None => None,
             Some(Value::Date(date)) => Some(date),
             Some(Value::String(text)) => Some(Date::parse(&text).ok_or_else(|| {
-                parse_error(line, format!("`expires` must be a YYYY-MM-DD date, got `{text}`"))
+                parse_error(
+                    line,
+                    format!("`expires` must be a YYYY-MM-DD date, got `{text}`"),
+                )
             })?),
         };
 

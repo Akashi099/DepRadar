@@ -9,6 +9,7 @@
 //! into a single scored result.
 
 pub mod bktree;
+pub mod combosquat;
 pub mod dataset;
 pub mod distance;
 pub mod homoglyph;

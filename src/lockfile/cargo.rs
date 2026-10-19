@@ -41,6 +41,7 @@ pub fn parse_cargo_lock(contents: &str) -> Result<Vec<Dependency>, ParseError> {
             ecosystem: Ecosystem::CratesIo,
             direct: false,
             dev: false,
+            path: Vec::new(),
         })
         .collect())
 }
