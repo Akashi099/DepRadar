@@ -459,3 +459,21 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** eeshasalaudeen734-creator
 - **Closes:** #82
 - **Status:** In review.
+
+### scanner — Markdown report format (initial implementation)
+
+- **What:** Adds initial Markdown report output format in
+  [`markdown.rs`](src/report/markdown.rs). Renders scan reports as Markdown
+  suitable for GitHub issues and PR comments. Output includes a summary
+  table (packages scanned, typosquats, vulnerabilities, suppressed,
+  warnings), detailed sections per finding with severity badges, and
+  sections for suppressed findings and warnings. Each finding shows package
+  details, ecosystem, severity, scope (direct/transitive), dependency path,
+  and specific details based on finding type (typosquat with edit distance
+  and homoglyph information, or vulnerability with OSV reference links).
+- **Tests:** Snapshot test using `insta` covering a report with both
+  typosquat and vulnerability findings. Unit tests for severity badge colors
+  and ecosystem formatting across all supported ecosystems.
+- **By:** coderolisa
+- **Closes:** Partial contribution to markdown report issue (1% implementation)
+- **Status:** In progress.
