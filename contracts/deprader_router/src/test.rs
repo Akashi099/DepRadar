@@ -513,3 +513,346 @@ fn test_admin_rotation_is_two_step() {
     t.client.release(&bounty_id, &claim_id);
     assert_eq!(t.last_auth(), new_admin);
 }
+
+// --------------------------------------------------------- release_split
+
+#[test]
+fn test_release_split_50_50() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (claimant1, claim1) = t.claim(bounty_id);
+    let (claimant2, claim2) = t.claim(bounty_id);
+
+    let mut shares = soroban_sdk::Vec::new(&t.env);
+    shares.push_back((claim1, 5_000));
+    shares.push_back((claim2, 5_000));
+
+    t.client.release_split(&bounty_id, &shares);
+    assert_eq!(t.last_auth(), t.admin);
+
+    // Each gets 200 (AMOUNT=400 / 2)
+    assert_eq!(t.token.balance(&claimant1), 200);
+    assert_eq!(t.token.balance(&claimant2), 200);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+
+    let bounty = t.client.get_bounty(&bounty_id).unwrap();
+    assert_eq!(bounty.status, BountyStatus::Released);
+    assert_eq!(
+        t.client.get_claim(&bounty_id, &claim1).unwrap().status,
+        ClaimStatus::Accepted
+    );
+    assert_eq!(
+        t.client.get_claim(&bounty_id, &claim2).unwrap().status,
+        ClaimStatus::Accepted
+    );
+}
+
+#[test]
+fn test_release_split_rounding_remainder() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (claimant1, claim1) = t.claim(bounty_id);
+    let (claimant2, claim2) = t.claim(bounty_id);
+    let (claimant3, claim3) = t.claim(bounty_id);
+
+    // 33.33% each, with 1 bps leftover = first gets remainder
+    let mut shares = soroban_sdk::Vec::new(&t.env);
+    shares.push_back((claim1, 3_333));
+    shares.push_back((claim2, 3_333));
+    shares.push_back((claim3, 3_334));
+
+    t.client.release_split(&bounty_id, &shares);
+
+    // AMOUNT = 400
+    // claim1: first share, gets remainder = 400 - 133 - 133 = 134
+    // claim2: (400 * 3333) / 10000 = 133
+    // claim3: (400 * 3334) / 10000 = 133
+    assert_eq!(t.token.balance(&claimant1), 134);
+    assert_eq!(t.token.balance(&claimant2), 133);
+    assert_eq!(t.token.balance(&claimant3), 133);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn test_release_split_rejects_invalid_sum() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (_, claim1) = t.claim(bounty_id);
+    let (_, claim2) = t.claim(bounty_id);
+
+    let mut shares = soroban_sdk::Vec::new(&t.env);
+    shares.push_back((claim1, 5_000));
+    shares.push_back((claim2, 4_000));
+
+    assert_eq!(
+        t.client.try_release_split(&bounty_id, &shares),
+        Err(Ok(Error::InvalidShares))
+    );
+
+    // No funds moved
+    assert_eq!(t.token.balance(&t.client.address), AMOUNT);
+}
+
+#[test]
+fn test_release_split_rejects_duplicate_claim() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (_, claim1) = t.claim(bounty_id);
+
+    let mut shares = soroban_sdk::Vec::new(&t.env);
+    shares.push_back((claim1, 5_000));
+    shares.push_back((claim1, 5_000));
+
+    assert_eq!(
+        t.client.try_release_split(&bounty_id, &shares),
+        Err(Ok(Error::InvalidShares))
+    );
+}
+
+#[test]
+fn test_release_split_rejects_non_pending_claim() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (_, claim1) = t.claim(bounty_id);
+    let (_, claim2) = t.claim(bounty_id);
+
+    // Reject claim2 first
+    t.client.reject_claim(&bounty_id, &claim2);
+
+    let mut shares = soroban_sdk::Vec::new(&t.env);
+    shares.push_back((claim1, 5_000));
+    shares.push_back((claim2, 5_000));
+
+    assert_eq!(
+        t.client.try_release_split(&bounty_id, &shares),
+        Err(Ok(Error::ClaimNotPending))
+    );
+}
+
+// ------------------------------------------------------------ fund_bounty
+
+#[test]
+fn test_fund_bounty_increases_amount() {
+    let t = setup();
+    let bounty_id = t.create();
+
+    let funder2 = Address::generate(&t.env);
+    StellarAssetClient::new(&t.env, &t.token.address).mint(&funder2, &500);
+
+    t.client.fund_bounty(&funder2, &bounty_id, &100);
+    assert_eq!(t.last_auth(), funder2);
+    assert_eq!(t.last_event_topic(), symbol_short!("funded"));
+
+    let bounty = t.client.get_bounty(&bounty_id).unwrap();
+    assert_eq!(bounty.amount, AMOUNT + 100);
+    assert_eq!(t.token.balance(&t.client.address), AMOUNT + 100);
+    assert_eq!(t.token.balance(&funder2), 400);
+}
+
+#[test]
+fn test_fund_bounty_tracks_multiple_funders() {
+    let t = setup();
+    let bounty_id = t.create();
+
+    let funder2 = Address::generate(&t.env);
+    let funder3 = Address::generate(&t.env);
+    StellarAssetClient::new(&t.env, &t.token.address).mint(&funder2, &200);
+    StellarAssetClient::new(&t.env, &t.token.address).mint(&funder3, &300);
+
+    t.client.fund_bounty(&funder2, &bounty_id, &150);
+    t.client.fund_bounty(&funder3, &bounty_id, &250);
+
+    let bounty = t.client.get_bounty(&bounty_id).unwrap();
+    assert_eq!(bounty.amount, AMOUNT + 150 + 250);
+    assert_eq!(bounty.funders.len(), 3);
+}
+
+#[test]
+fn test_cancel_bounty_refunds_all_funders_proportionally() {
+    let t = setup();
+    let bounty_id = t.create();
+
+    let funder2 = Address::generate(&t.env);
+    StellarAssetClient::new(&t.env, &t.token.address).mint(&funder2, &600);
+
+    t.client.fund_bounty(&funder2, &bounty_id, &600);
+
+    // Admin cancels
+    t.client.cancel_bounty(&t.admin, &bounty_id);
+
+    // Each funder gets back exactly what they put in
+    assert_eq!(t.token.balance(&t.creator), 1_000 - AMOUNT + AMOUNT);
+    assert_eq!(t.token.balance(&funder2), 600 - 600 + 600);
+    assert_eq!(t.token.balance(&t.client.address), 0);
+}
+
+#[test]
+fn test_fund_bounty_rejects_closed_bounty() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (_, claim_id) = t.claim(bounty_id);
+    t.client.release(&bounty_id, &claim_id);
+
+    let funder2 = Address::generate(&t.env);
+    assert_eq!(
+        t.client.try_fund_bounty(&funder2, &bounty_id, &100),
+        Err(Ok(Error::BountyNotOpen))
+    );
+}
+
+#[test]
+fn test_fund_bounty_rejects_invalid_amount() {
+    let t = setup();
+    let bounty_id = t.create();
+    let funder2 = Address::generate(&t.env);
+
+    assert_eq!(
+        t.client.try_fund_bounty(&funder2, &bounty_id, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        t.client.try_fund_bounty(&funder2, &bounty_id, &-50),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+// --------------------------------------------------------- extend_deadline
+
+#[test]
+fn test_extend_deadline_works() {
+    let t = setup();
+    let bounty_id = t.create();
+
+    let new_deadline = DEADLINE + 7 * 24 * 60 * 60;
+    t.client
+        .extend_deadline(&t.creator, &bounty_id, &new_deadline);
+    assert_eq!(t.last_auth(), t.creator);
+    assert_eq!(t.last_event_topic(), symbol_short!("extended"));
+
+    let bounty = t.client.get_bounty(&bounty_id).unwrap();
+    assert_eq!(bounty.deadline, new_deadline);
+}
+
+#[test]
+fn test_extend_deadline_rejects_non_creator() {
+    let t = setup();
+    let bounty_id = t.create();
+    let stranger = Address::generate(&t.env);
+
+    assert_eq!(
+        t.client
+            .try_extend_deadline(&stranger, &bounty_id, &(DEADLINE + 1000)),
+        Err(Ok(Error::NotAuthorized))
+    );
+}
+
+#[test]
+fn test_extend_deadline_rejects_earlier_deadline() {
+    let t = setup();
+    let bounty_id = t.create();
+
+    assert_eq!(
+        t.client
+            .try_extend_deadline(&t.creator, &bounty_id, &(DEADLINE - 1)),
+        Err(Ok(Error::InvalidDeadline))
+    );
+}
+
+#[test]
+fn test_extend_deadline_rejects_beyond_max_duration() {
+    let t = setup();
+    let bounty_id = t.create();
+
+    let too_late = START + MAX_BOUNTY_DURATION_SECS + 1;
+    assert_eq!(
+        t.client
+            .try_extend_deadline(&t.creator, &bounty_id, &too_late),
+        Err(Ok(Error::InvalidDeadline))
+    );
+}
+
+#[test]
+fn test_extend_deadline_rejects_closed_bounty() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (_, claim_id) = t.claim(bounty_id);
+    t.client.release(&bounty_id, &claim_id);
+
+    assert_eq!(
+        t.client
+            .try_extend_deadline(&t.creator, &bounty_id, &(DEADLINE + 1000)),
+        Err(Ok(Error::BountyNotOpen))
+    );
+}
+
+#[test]
+fn test_extend_deadline_checks_auth() {
+    let t = setup();
+    let bounty_id = t.create();
+    let new_deadline = DEADLINE + 1000;
+
+    t.client
+        .extend_deadline(&t.creator, &bounty_id, &new_deadline);
+    assert_eq!(t.last_auth(), t.creator);
+}
+
+// ---------------------------------------------------- token allowlist
+
+#[test]
+fn test_allow_token_works() {
+    let t = setup();
+
+    assert!(!t.client.is_token_allowed(&t.token.address));
+
+    t.client.allow_token(&t.token.address);
+    assert_eq!(t.last_auth(), t.admin);
+    assert_eq!(t.last_event_topic(), symbol_short!("tkn_allow"));
+
+    assert!(t.client.is_token_allowed(&t.token.address));
+}
+
+#[test]
+fn test_disallow_token_works() {
+    let t = setup();
+    t.client.allow_token(&t.token.address);
+    assert!(t.client.is_token_allowed(&t.token.address));
+
+    t.client.disallow_token(&t.token.address);
+    assert_eq!(t.last_auth(), t.admin);
+    assert_eq!(t.last_event_topic(), symbol_short!("tkn_dislow"));
+
+    assert!(!t.client.is_token_allowed(&t.token.address));
+}
+
+#[test]
+fn test_create_bounty_rejects_disallowed_token() {
+    let t = setup();
+
+    let result = t.client.try_create_bounty(
+        &t.creator,
+        &t.s("org/repo#1"),
+        &AMOUNT,
+        &t.token.address,
+        &DEADLINE,
+    );
+    assert_eq!(result, Err(Ok(Error::TokenNotAllowed)));
+}
+
+#[test]
+fn test_create_bounty_works_with_allowed_token() {
+    let t = setup();
+    t.client.allow_token(&t.token.address);
+
+    let bounty_id = t.create();
+    assert_eq!(bounty_id, 1);
+}
+
+#[test]
+fn test_non_admin_cannot_change_allowlist() {
+    let t = setup();
+    let stranger = Address::generate(&t.env);
+
+    t.env.set_auths(&[]);
+    assert!(t.client.try_allow_token(&t.token.address).is_err());
+    assert!(t.client.try_disallow_token(&t.token.address).is_err());
+}

@@ -459,3 +459,56 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** eeshasalaudeen734-creator
 - **Closes:** #82
 - **Status:** In review.
+
+### deprader_router — split bounty payouts (release_split)
+
+- **What:** Adds `release_split(bounty_id, shares: Vec<(claim_id, bps)>)` to
+  split a bounty payout across multiple claimants. `shares` must sum to
+  exactly 10_000 basis points and reference distinct pending claims. Rounding
+  remainder goes to the first share. Emits one `released` event per paid claim.
+  Adds `Error::InvalidShares` for validation failures.
+- **Tests:** 50/50 split, rounding remainder distribution, sum ≠ 10_000
+  rejected, duplicate claim rejected, non-pending claim rejected.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #107
+- **Status:** Merged.
+
+### deprader_router — fund open bounties (fund_bounty)
+
+- **What:** Adds `fund_bounty(funder, bounty_id, amount)` to top up an existing
+  open bounty in the same token. Tracks contributions per funder in
+  `Bounty.funders: Vec<(Address, i128)>` for proportional refunds. Updated
+  `cancel_bounty` to refund each funder exactly what they contributed. Emits a
+  `funded` event.
+- **Tests:** Top-up increases amount, cancel refunds every funder proportionally,
+  closed bounties rejected, invalid amounts rejected, auth check.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #108
+- **Status:** Merged.
+
+### deprader_router — extend bounty deadline (extend_deadline)
+
+- **What:** Adds `extend_deadline(creator, bounty_id, new_deadline)` to let
+  creators extend an open bounty's deadline. Only the creator can extend, only
+  to a later time, and only within `MAX_BOUNTY_DURATION_SECS` of `created_at`.
+  Emits an `extended` event.
+- **Tests:** Successful extension, non-creator rejected, earlier deadline
+  rejected, beyond max duration rejected, closed bounty rejected, auth check via
+  `env.auths()`.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #109
+- **Status:** Merged.
+
+### deprader_router — admin token allowlist
+
+- **What:** Adds admin-managed token allowlist to prevent malicious tokens and
+  spam. New functions: `allow_token(token)`, `disallow_token(token)` (both
+  admin-only), and `is_token_allowed(token)`. `create_bounty` now rejects tokens
+  not on the allowlist with `Error::TokenNotAllowed`. Allowlist state stored in
+  `DataKey::AllowedToken(Address)`. Emits `tkn_allow` and `tkn_dislow` events.
+- **Tests:** Allow token works, disallow token works, disallowed token rejected
+  in `create_bounty`, allowed token works in `create_bounty`, non-admin cannot
+  change allowlist.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #110
+- **Status:** Merged.
