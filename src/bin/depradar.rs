@@ -42,6 +42,10 @@ struct Cli {
     #[arg(long, short = 'f', value_enum, default_value_t = Format::Text, global = true)]
     format: Format,
 
+    /// Suppress progress indicators and non-essential output
+    #[arg(long, short = 'q', global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -74,7 +78,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Name { package } => run_name(&package, cli.format),
-        Command::Scan { path, offline } => match scan(&path, offline) {
+        Command::Scan { path, offline } => match scan(&path, offline, cli.quiet) {
             Ok(scanned) => {
                 match (cli.format, &scanned) {
                     (Format::Text, Scanned::File(report)) => println!("{report}"),
@@ -172,7 +176,7 @@ impl Scanned {
 /// Scans `path` as a single lockfile or, for a directory, every lockfile
 /// under it, honouring a `.depradarignore` next to the lockfile (or at the
 /// directory's root).
-fn scan(path: &Path, offline: bool) -> Result<Scanned, String> {
+fn scan(path: &Path, offline: bool, quiet: bool) -> Result<Scanned, String> {
     let ignore_dir = if path.is_dir() {
         path
     } else {
@@ -191,6 +195,9 @@ fn scan(path: &Path, offline: bool) -> Result<Scanned, String> {
     };
     if offline {
         opts.advisories = None;
+    }
+    if quiet {
+        opts.show_progress = false;
     }
 
     if path.is_dir() {

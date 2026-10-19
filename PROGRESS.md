@@ -459,3 +459,19 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** eeshasalaudeen734-creator
 - **Closes:** #82
 - **Status:** In review.
+
+### CLI — progress bar for OSV vulnerability checks
+
+- **What:** Adds a progress bar on stderr when checking packages against the
+  OSV API. Uses `indicatif` (already in `Cargo.toml`) to show
+  `Checking for vulnerabilities [###>---] 42/100 packages` during the
+  advisories stage in [`pipeline.rs`](src/pipeline.rs). The bar appears only
+  when stderr is a TTY and not in `--quiet` mode (`ScanOptions::show_progress`).
+  Non-TTY stderr (pipes, CI) sees no progress output. The bar clears itself
+  on completion so it doesn't clutter the final report.
+- **Tests:** Manual verification — progress appears when running
+  `depradar scan` on a lockfile with many dependencies, and disappears with
+  `--quiet` or when piped.
+- **By:** coderolisa
+- **Closes:** Part of an issue (1% contribution)
+- **Status:** In review.
