@@ -2,8 +2,8 @@
 //!
 //! Where the typosquat and CVE modules reason about a package's *name* and
 //! version, the detectors here reason about its *contents*: what runs when
-//! it's installed ([`setup_py`]) and what machine code it ships
-//! ([`binaries`]).
+//! it's installed ([`setup_py`]), what machine code it ships
+//! ([`binaries`]), and what changed between two releases ([`diff`]).
 //!
 //! Behavioral findings are their own type ([`BehavioralFinding`]), not
 //! [`Finding`](crate::model::Finding)s — they describe files inside one
@@ -12,6 +12,7 @@
 //! the level definitions live in `docs/severity.md`.
 
 pub mod binaries;
+pub mod diff;
 pub mod setup_py;
 
 use std::fmt;

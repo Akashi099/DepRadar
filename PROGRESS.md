@@ -506,3 +506,25 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** iam-mercy
 - **Closes:** #104
 - **Status:** In review.
+
+### behavioral — diff two package versions for risky changes
+
+- **What:** Adds [`diff.rs`](src/behavioral/diff.rs): `diff_versions(old,
+  new)` compares two unpacked package trees and reports added/removed
+  files, install scripts present in `new` but not `old` (a root
+  `setup.py`, or npm `preinstall`/`install`/`postinstall` entries in
+  `package.json`), and suspicious `setup.py` calls new in `new`. Calls
+  are matched by file and kind (not line), so ordinary line shifts from a
+  version bump create no noise. `PackageDiff::is_clean()` is true when
+  only benign files changed. New install scripts rate medium; new calls
+  inherit their kind's level.
+- **Tests:** Fixture pairs under
+  [`tests/fixtures/behavioral/`](tests/fixtures/behavioral): `leftpad-lite`
+  v1 (clean npm package) vs v2 (adds a malicious `setup.py` — the
+  headline case), identical trees (clean), v1 vs a docs-only bump (added
+  file alone stays clean), `beacon` v1/v2 (pre-existing `requests.get`
+  not re-reported, only the new `b64decode`), and `npmish` v1/v2 (new
+  `postinstall` in `package.json`).
+- **By:** iam-mercy
+- **Closes:** #105
+- **Status:** In review.
