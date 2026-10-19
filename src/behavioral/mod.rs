@@ -2,7 +2,8 @@
 //!
 //! Where the typosquat and CVE modules reason about a package's *name* and
 //! version, the detectors here reason about its *contents*: what runs when
-//! it's installed ([`setup_py`]).
+//! it's installed ([`setup_py`]) and what machine code it ships
+//! ([`binaries`]).
 //!
 //! Behavioral findings are their own type ([`BehavioralFinding`]), not
 //! [`Finding`](crate::model::Finding)s — they describe files inside one
@@ -10,6 +11,7 @@
 //! [`Severity`] so reports can rank them the same way as lockfile findings;
 //! the level definitions live in `docs/severity.md`.
 
+pub mod binaries;
 pub mod setup_py;
 
 use std::fmt;
@@ -39,6 +41,39 @@ impl fmt::Display for BehavioralFinding {
         }
         write!(f, "{}", self.message)
     }
+}
+
+/// Collects the package-relative path of every regular file under `root`,
+/// sorted, using `/` as the separator on every platform. Directory symlinks
+/// are not followed and non-file entries are skipped.
+pub(crate) fn collect_files(root: &std::path::Path) -> std::io::Result<Vec<String>> {
+    let mut files = Vec::new();
+    collect_into(root, root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_into(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<String>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_into(root, &path, out)?;
+        } else if file_type.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push(rel);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

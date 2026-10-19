@@ -483,3 +483,26 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** iam-mercy
 - **Closes:** #103
 - **Status:** In review.
+
+### behavioral — flag native binaries shipped inside packages
+
+- **What:** Adds [`binaries.rs`](src/behavioral/binaries.rs):
+  `scan_binaries` walks an unpacked package tree and reports every file
+  that either carries an ELF (`\x7fELF`), PE (`MZ`) or Mach-O
+  (`FEEDFACE`/`FEEDFACF`, both endians) magic header, or has a native
+  extension (`.exe`, `.dll`, `.so`, `.dylib`, including versioned
+  `libfoo.so.1`). Magic bytes are checked before extensions, so an
+  extension-less ELF is still caught and a text file named `.dylib` is
+  still listed. Emits one low-severity informational finding listing all
+  binaries — prebuilt executables can't be code-reviewed, but real
+  projects ship legitimate native addons, so it's a review prompt, not a
+  red flag.
+- **Tests:** Small fake headers for each format (ELF, PE, 64-bit LE and
+  32-bit BE Mach-O, plus non-magic short/empty buffers); extension
+  matching incl. `libfoo.so.1.2.3` and negative cases; a tempdir tree
+  mixing magic-hit, extension-only, nested and clean files; the
+  informational finding's low severity and file list; empty result for a
+  binary-free package.
+- **By:** iam-mercy
+- **Closes:** #104
+- **Status:** In review.
