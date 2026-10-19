@@ -459,3 +459,60 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** eeshasalaudeen734-creator
 - **Closes:** #82
 - **Status:** In review.
+
+### deprader_router — withdraw_claim
+
+- **What:** Adds `withdraw_claim(claimant, bounty_id, claim_id)` for
+  researchers to retract their own pending claims. Checks claimant auth and
+  claim status (must be `Pending`). Adds `ClaimStatus::Withdrawn` variant,
+  decrements `pending_claims`, and emits a `withdrawn` event.
+- **Tests:** Tests cover the happy path, wrong claimant auth fails with
+  `NotAuthorized`, and already-rejected claims fail with `ClaimNotPending`.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #111
+- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
+  test --workspace` pass. Contract test snapshots updated. Wasm build
+  succeeds.
+
+### deprader_router — emergency pause switch
+
+- **What:** Adds `pause()` / `unpause()` (admin-only) and `is_paused()` to
+  halt fund movements during emergency response. While paused,
+  `create_bounty`, `submit_claim` and `release` fail with `Error::Paused`.
+  `cancel_bounty` by admin still works when paused so locked funds can be
+  returned. Adds `DataKey::Paused`, `Error::Paused`, and emits `paused` /
+  `unpaused` events.
+- **Tests:** Tests cover every gated function (create, submit, release),
+  admin refund path, unpause restore, and admin auth requirement.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #112
+- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
+  test --workspace` pass. Contract test snapshots updated. Wasm build
+  succeeds.
+
+### deprader_router — admin-gated contract upgrade
+
+- **What:** Adds `upgrade(new_wasm_hash)` (admin-only) that calls
+  `env.deployer().update_current_contract_wasm`. Emits an `upgraded` event.
+  State survives upgrades. Documents the upgrade procedure in
+  `DEPLOYMENT.md`.
+- **Tests:** Test uploads a second WASM, upgrades to it, and verifies stored
+  bounties and claims persist. Admin auth requirement tested.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #113
+- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
+  test --workspace` pass. Contract test snapshots updated. Wasm build
+  succeeds. All commands and links in the new docs verified.
+
+### deprader_router — paginated bounty listing getter
+
+- **What:** Adds `get_bounties(start_id, limit) -> Vec<(u64, Bounty)>` to
+  read multiple bounties in one call instead of N RPC round trips. Limit is
+  capped at 50. Skips missing IDs. Adds `Error::InvalidLimit`.
+- **Tests:** Tests cover first page, last partial page, start beyond count,
+  limit cap, zero limit fails, and over-limit fails.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #114
+- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
+  test --workspace` pass. Contract test snapshots updated. Wasm build
+  succeeds.
