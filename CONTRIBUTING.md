@@ -61,6 +61,8 @@ Some tests in `src/cve/` call the live [OSV API](https://osv.dev); they skip
 - One issue per PR where possible, with `Closes #N` in the description.
 - Keep CI green: fmt, clippy, tests, the wasm build, and the client
   typecheck all run on every PR.
+- New detectors must rate their findings per the
+  [severity model](docs/severity.md) and add an example there.
 - If you change `contracts/`, commit the regenerated files under
   `contracts/deprader_router/test_snapshots/`.
 - Security-sensitive findings go through [SECURITY.md](SECURITY.md), not
