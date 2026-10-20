@@ -1,7 +1,10 @@
-//! Crawler infrastructure — registry crawlers and supporting utilities.
+//! Crawlers that watch package registries for newly published packages.
 //!
-//! The crawler side of DepRadar watches package registries for new packages
-//! and new versions of existing packages, then hands them off to the scanner
-//! pipeline.
+//! Everything network-facing goes through [`crate::net::PoliteClient`], so
+//! the crawlers themselves only deal with parsing and checkpointing.
+//!
+//! * [`pypi`] — PyPI's RSS feeds of new projects and updates (#91).
+//! * [`crates`] — crates.io's "newest crates" API (#92).
 
-pub mod checkpoint;
+pub mod crates;
+pub mod pypi;

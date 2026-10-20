@@ -460,66 +460,78 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Closes:** #82
 - **Status:** In review.
 
-### crawler — persist crawl checkpoints to disk (#95)
 
-- **What:** Adds `src/crawler/checkpoint.rs` and the new `pub mod crawler`
-  tree. `CheckpointStore::open(path)` reads (or creates) a
-  `checkpoints.json` keyed by crawler name. `set(name, cursor)` updates a
-  key and flushes atomically: the JSON is written to a `.json.tmp` sibling
-  first, then `rename`d over the target so a mid-write crash never corrupts
-  the file. `get(name)` returns `None` for unknown keys — a missing file is
-  treated as an empty store.
-- **Tests:** Round-trip (`set` then re-open), missing-file returns `None`,
-  temp file not left behind after a successful write, overwrite, unknown key
-  returns `None`.
-- **By:** kiro
-- **Closes:** #95
-- **Status:** Merged.
+### crawler — shared rate limiter and polite HTTP client
 
-### crawler — pipe crawled packages into the typosquat scorer (#96)
+- **What:** Adds [`src/net.rs`](src/net.rs) with `PoliteClient`, the one
+  blocking HTTP client every crawler shares. It wraps `reqwest::blocking`
+  with a descriptive User-Agent (`DEFAULT_USER_AGENT`, names DepRadar and
+  links the repo — required by crates.io's crawler policy), a request
+  timeout (`DEFAULT_TIMEOUT`, 15s), and a per-host token-bucket rate limit
+  of capacity one (`DEFAULT_PER_HOST_RATE`, 1 req/s per host): one token
+  refills every `per_host_rate`, so requests to the same host are spaced
+  evenly. `get`/`get_text`/`get_json` wait for a token before sending.
+- **Tests:** Unit tests on the bucket (one immediate request, then delay;
+  refill after a full period); against mockito mock servers, N requests
+  take at least `(N-1) × rate`, two different hosts don't share a bucket,
+  invalid URLs are rejected before any request, and non-2xx statuses are
+  reported.
+- **By:** orsar-rita
+- **Closes:** #93
+- **Status:** In review.
 
-- **What:** Adds `watch_packages`, `PackageSource`, `FakeCrawler`, and
-  `WATCH_CONFIDENCE_THRESHOLD` to `src/pipeline.rs`. `watch_packages` runs a
-  loop that calls `source.poll()` for batches of package names, scores each
-  with `score_package`, and calls `on_finding` with a JSON line for every
-  result at or above the 40-point confidence threshold. Adds a `watch`
-  subcommand to `src/bin/depradar.rs` (`depradar watch --registry
-  npm|pypi|crates --min-confidence N`).
-- **Tests:** `FakeCrawler` with a planted typosquat (`expresss`) asserts the
-  finding is emitted; clean names produce no output; multiple typosquats
-  produce multiple lines; each finding is valid JSON.
-- **By:** kiro
-- **Closes:** #96
-- **Status:** Merged.
+### crawler — PyPI new-package crawler
 
-### crawler — detect maintainer changes on popular packages (#97)
+- **What:** Adds [`src/crawler/pypi.rs`](src/crawler/pypi.rs).
+  `PypiCrawler::poll(PypiFeed)` fetches `https://pypi.org/rss/packages.xml`
+  (new projects) or `/rss/updates.xml` (new releases) through
+  `PoliteClient`, parses the RSS 2.0 body with a small hand-rolled
+  `<item>`/`<guid>`/`<title>`/`<link>`/`<pubDate>` extractor (`parse_feed`,
+  XML entities unescaped), and dedupes against a per-feed `Checkpoint` —
+  the GUID and publish time of the newest item seen last poll. Items are
+  reported newest-first; re-polling an unchanged feed yields nothing, and
+  when the checkpoint GUID ages out of the feed, RFC 822 publish times
+  (parsed to epoch seconds, no date crate) take over the comparison.
+- **Tests:** Fixture RSS bodies cover item order, entity unescaping,
+  empty feeds, malformed (non-RSS) bodies, epoch conversion of known
+  dates, checkpoint dedupe (same feed twice, new item on top, GUID aged
+  out), and two-poll dedupe plus per-feed checkpoints against a mockito
+  server.
+- **By:** orsar-rita
+- **Closes:** #91
+- **Status:** In review.
 
-- **What:** Adds `src/monitor/maintainers.rs` (new `pub mod monitor` tree).
-  `MaintainerStore` persists `package → (version → maintainer_set)` as
-  JSON. `check_maintainers(store, package, version, maintainers)` returns a
-  `Vec<MaintainerChanged>` — one entry per new maintainer that has never
-  been seen in any previous version of that package. The first observation is
-  always baseline-only (no finding). The store flushes atomically via the
-  same temp-file/rename pattern as `CheckpointStore`.
-- **Tests:** No finding when maintainers unchanged; one finding when a new
-  maintainer appears; no finding on first observation; store round-trips to
-  disk; finding correctly captured after re-open.
-- **By:** kiro
-- **Closes:** #97
-- **Status:** Merged.
+### crawler — crates.io new-crate crawler
 
-### crawler — watch popular packages for newly added install scripts (#98)
+- **What:** Adds [`src/crawler/crates.rs`](src/crawler/crates.rs).
+  `CratesCrawler::crawl_new` pages
+  `GET /api/v1/crates?sort=new&per_page=100&page=N` through `PoliteClient`
+  and stops when it reaches the `Checkpoint` crate (the newest crate seen
+  last crawl), a short page, or a `max_pages` safety net — so a lost
+  checkpoint can't walk the whole registry. Policy compliance is documented
+  in the module docs: the User-Agent and the ≤1 req/s limit come from
+  `PoliteClient`, and this crawler has no other HTTP path.
+- **Tests:** Mocked tests cover the API page shape, paging until the
+  checkpoint crate on page 2, dedupe across two crawls, the `max_pages`
+  cap, and stopping on a short page.
+- **By:** orsar-rita
+- **Closes:** #92
+- **Status:** In review.
 
-- **What:** Adds `src/monitor/scripts.rs`. `ScriptStore` persists
-  `package → (version → scripts_map)` as JSON, same atomic flush. 
-  `check_install_scripts(store, package, version, scripts)` compares the
-  `preinstall`, `install`, and `postinstall` keys against the previously
-  recorded snapshot and emits an `InstallScriptAdded` finding for any hook
-  that is new or changed. The first observation is baseline-only.
-- **Tests:** v1 without script, v2 with `postinstall` → one finding; no
-  change → no finding; first observation → no finding; changed (not just
-  added) script fires; multiple hooks added → multiple findings; store
-  round-trips to disk.
-- **By:** kiro
-- **Closes:** #98
-- **Status:** Merged.
+### registry — npm package metadata fetch
+
+- **What:** Adds [`src/registry/npm.rs`](src/registry/npm.rs).
+  `fetch_npm_metadata(name)` fetches `https://registry.npmjs.org/<name>`
+  via `PoliteClient` and reduces the document to
+  `PackageMeta { name, maintainers, created, modified, repository,
+  latest, versions_count }`. Scoped names are URL-encoded (`/` → `%2F`),
+  so `@types/node` is fetched from `/@types%2Fnode`; `repository` accepts
+  both the bare-string and object form the registry serves. A
+  `fetch_npm_metadata_with` variant takes a caller-supplied client so a
+  whole crawl shares one rate-limit budget.
+- **Tests:** Fixture documents (lodash, `@types/node`) cover both
+  repository forms, maintainer usernames, missing optional fields, and a
+  mockito test asserts the encoded path is requested for a scoped name.
+- **By:** orsar-rita
+- **Closes:** #94
+- **Status:** In review.
