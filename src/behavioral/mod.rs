@@ -13,7 +13,11 @@
 
 pub mod binaries;
 pub mod diff;
+pub mod network;
+pub mod obfuscation;
+pub mod scripts;
 pub mod setup_py;
+pub mod tarball;
 
 use std::fmt;
 
