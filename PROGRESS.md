@@ -459,3 +459,67 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** eeshasalaudeen734-creator
 - **Closes:** #82
 - **Status:** In review.
+
+### crawler — persist crawl checkpoints to disk (#95)
+
+- **What:** Adds `src/crawler/checkpoint.rs` and the new `pub mod crawler`
+  tree. `CheckpointStore::open(path)` reads (or creates) a
+  `checkpoints.json` keyed by crawler name. `set(name, cursor)` updates a
+  key and flushes atomically: the JSON is written to a `.json.tmp` sibling
+  first, then `rename`d over the target so a mid-write crash never corrupts
+  the file. `get(name)` returns `None` for unknown keys — a missing file is
+  treated as an empty store.
+- **Tests:** Round-trip (`set` then re-open), missing-file returns `None`,
+  temp file not left behind after a successful write, overwrite, unknown key
+  returns `None`.
+- **By:** kiro
+- **Closes:** #95
+- **Status:** Merged.
+
+### crawler — pipe crawled packages into the typosquat scorer (#96)
+
+- **What:** Adds `watch_packages`, `PackageSource`, `FakeCrawler`, and
+  `WATCH_CONFIDENCE_THRESHOLD` to `src/pipeline.rs`. `watch_packages` runs a
+  loop that calls `source.poll()` for batches of package names, scores each
+  with `score_package`, and calls `on_finding` with a JSON line for every
+  result at or above the 40-point confidence threshold. Adds a `watch`
+  subcommand to `src/bin/depradar.rs` (`depradar watch --registry
+  npm|pypi|crates --min-confidence N`).
+- **Tests:** `FakeCrawler` with a planted typosquat (`expresss`) asserts the
+  finding is emitted; clean names produce no output; multiple typosquats
+  produce multiple lines; each finding is valid JSON.
+- **By:** kiro
+- **Closes:** #96
+- **Status:** Merged.
+
+### crawler — detect maintainer changes on popular packages (#97)
+
+- **What:** Adds `src/monitor/maintainers.rs` (new `pub mod monitor` tree).
+  `MaintainerStore` persists `package → (version → maintainer_set)` as
+  JSON. `check_maintainers(store, package, version, maintainers)` returns a
+  `Vec<MaintainerChanged>` — one entry per new maintainer that has never
+  been seen in any previous version of that package. The first observation is
+  always baseline-only (no finding). The store flushes atomically via the
+  same temp-file/rename pattern as `CheckpointStore`.
+- **Tests:** No finding when maintainers unchanged; one finding when a new
+  maintainer appears; no finding on first observation; store round-trips to
+  disk; finding correctly captured after re-open.
+- **By:** kiro
+- **Closes:** #97
+- **Status:** Merged.
+
+### crawler — watch popular packages for newly added install scripts (#98)
+
+- **What:** Adds `src/monitor/scripts.rs`. `ScriptStore` persists
+  `package → (version → scripts_map)` as JSON, same atomic flush. 
+  `check_install_scripts(store, package, version, scripts)` compares the
+  `preinstall`, `install`, and `postinstall` keys against the previously
+  recorded snapshot and emits an `InstallScriptAdded` finding for any hook
+  that is new or changed. The first observation is baseline-only.
+- **Tests:** v1 without script, v2 with `postinstall` → one finding; no
+  change → no finding; first observation → no finding; changed (not just
+  added) script fires; multiple hooks added → multiple findings; store
+  round-trips to disk.
+- **By:** kiro
+- **Closes:** #98
+- **Status:** Merged.

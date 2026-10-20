@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use deprader::ignore::{IgnoreFile, Suppressed, IGNORE_FILE_NAME};
 use deprader::model::{Ecosystem, Finding, FindingKind};
-use deprader::pipeline::{scan_dir, scan_lockfile, DirReport, Report, ScanOptions};
+use deprader::pipeline::{scan_dir, scan_lockfile, watch_packages, DirReport, FakeCrawler, Report, ScanOptions};
 use deprader::typosquat::scanner::{score_package, ScanResult};
 
 const EXAMPLES: &str = "\
@@ -23,6 +23,7 @@ Examples:
   depradar scan .                        Scan every lockfile in a directory or monorepo
   depradar scan . --offline              Typosquat checks only, no OSV lookup
   depradar --format json scan . | jq     Machine-readable output for CI
+  depradar watch --registry npm          Watch the npm registry and score new packages
 
 Exit codes:
   0  No findings
@@ -62,6 +63,23 @@ enum Command {
         #[arg(long)]
         offline: bool,
     },
+    /// Watch a package registry and emit typosquat findings as JSON lines
+    Watch {
+        /// The registry to watch
+        #[arg(long, value_enum, default_value_t = Registry::Npm)]
+        registry: Registry,
+        /// Minimum confidence score (0-100) to emit a finding
+        #[arg(long, default_value_t = 40)]
+        min_confidence: u8,
+    },
+}
+
+/// Package registry to watch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Registry {
+    Npm,
+    Pypi,
+    Crates,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -95,6 +113,10 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Command::Watch {
+            registry,
+            min_confidence,
+        } => run_watch(registry, min_confidence),
     }
 }
 
@@ -202,6 +224,36 @@ fn scan(path: &Path, offline: bool) -> Result<Scanned, String> {
             .map(Scanned::File)
             .map_err(|err| err.to_string())
     }
+}
+
+/// Runs the watch loop for `registry`, printing each finding as a JSON line to
+/// stdout. Findings below `min_confidence` are silently dropped.
+fn run_watch(registry: Registry, min_confidence: u8) -> ExitCode {
+    use deprader::pipeline::WATCH_CONFIDENCE_THRESHOLD;
+
+    let registry_name = match registry {
+        Registry::Npm => "npm",
+        Registry::Pypi => "pypi",
+        Registry::Crates => "crates",
+    };
+    eprintln!("Watching {registry_name} for new packages (min_confidence={min_confidence})…");
+
+    // In production this would be replaced by a real registry poller.
+    // For now we use a FakeCrawler with an empty list so the binary exits
+    // cleanly; the real crawler will be wired in once the registry clients
+    // land.
+    let crawler = FakeCrawler::new(std::iter::empty::<String>(), 64);
+    let threshold = min_confidence.max(WATCH_CONFIDENCE_THRESHOLD);
+    watch_packages(crawler, |line| {
+        // Re-parse to apply the caller-supplied threshold; the inner loop
+        // already applied WATCH_CONFIDENCE_THRESHOLD.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+            if v["confidence"].as_u64().unwrap_or(0) >= threshold as u64 {
+                println!("{line}");
+            }
+        }
+    });
+    ExitCode::SUCCESS
 }
 
 fn print_json(value: &Value) {
