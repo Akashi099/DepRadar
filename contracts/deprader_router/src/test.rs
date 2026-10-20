@@ -9,6 +9,13 @@ use soroban_sdk::{
     Address, Env, String, Symbol, TryFromVal,
 };
 
+mod testutils {
+    soroban_sdk::contractimport!(
+        file = "../../target/wasm32-unknown-unknown/release/deprader_router.wasm"
+    );
+    pub type DepRaderRouterV2Client<'a> = Client<'a>;
+}
+
 const START: u64 = 1_000_000;
 const DEADLINE: u64 = START + 30 * 24 * 60 * 60;
 const AMOUNT: i128 = 400;

@@ -80,6 +80,11 @@ Useful options (run `depradar --help` for the full list):
 Findings accepted in a `.depradarignore` next to the lockfile are reported
 as suppressed and never fail the run.
 
+Every finding carries a severity — low, medium, high, or critical. The
+[severity model](docs/severity.md) defines each level with examples per
+finding kind and explains how CVSS scores map in; `--fail-on` compares
+against the same levels.
+
 ### Exit codes
 
 | Code | Meaning |

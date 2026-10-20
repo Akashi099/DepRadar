@@ -52,6 +52,7 @@ pub enum ClaimStatus {
     Pending,
     Rejected,
     Accepted,
+    Withdrawn,
 }
 
 #[contracttype]
@@ -223,6 +224,10 @@ impl DepRaderRouter {
     ) -> Result<u64, Error> {
         creator.require_auth();
 
+        if Self::is_paused(env.clone()) {
+            return Err(Error::Paused);
+        }
+
         stored_admin(&env)?;
         if !Self::is_token_allowed(env.clone(), token.clone()) {
             return Err(Error::TokenNotAllowed);
@@ -391,7 +396,13 @@ impl DepRaderRouter {
             return Err(Error::BountyNotOpen);
         }
 
-        if stored_admin(&env)? != caller {
+        let is_admin = stored_admin(&env)? == caller;
+        // Admin can cancel even when paused to return funds
+        if !is_admin && Self::is_paused(env.clone()) {
+            return Err(Error::Paused);
+        }
+
+        if !is_admin {
             if caller != bounty.creator {
                 return Err(Error::NotAuthorized);
             }
@@ -434,6 +445,11 @@ impl DepRaderRouter {
         proof_ref: String,
     ) -> Result<u32, Error> {
         claimant.require_auth();
+
+        if Self::is_paused(env.clone()) {
+            return Err(Error::Paused);
+        }
+
         check_ref(&proof_ref)?;
 
         let key = DataKey::Bounty(bounty_id);
@@ -486,6 +502,40 @@ impl DepRaderRouter {
             .get(&DataKey::ClaimBy(bounty_id, claimant))
     }
 
+    /// Allows a claimant to withdraw their own pending claim.
+    pub fn withdraw_claim(
+        env: Env,
+        claimant: Address,
+        bounty_id: u64,
+        claim_id: u32,
+    ) -> Result<(), Error> {
+        claimant.require_auth();
+
+        let key = DataKey::Bounty(bounty_id);
+        let mut bounty: Bounty = get_persistent(&env, &key).ok_or(Error::BountyNotFound)?;
+
+        let claim_key = DataKey::Claim(bounty_id, claim_id);
+        let mut claim: Claim = get_persistent(&env, &claim_key).ok_or(Error::ClaimNotFound)?;
+
+        if claim.claimant != claimant {
+            return Err(Error::NotAuthorized);
+        }
+        if claim.status != ClaimStatus::Pending {
+            return Err(Error::ClaimNotPending);
+        }
+
+        claim.status = ClaimStatus::Withdrawn;
+        set_persistent(&env, &claim_key, &claim);
+        bounty.pending_claims -= 1;
+        set_persistent(&env, &key, &bounty);
+
+        env.events().publish(
+            (symbol_short!("withdrawn"), bounty_id),
+            (claim_id, claimant),
+        );
+        Ok(())
+    }
+
     /// Admin-only: marks a pending claim as rejected. The bounty stays open
     /// for other claims.
     pub fn reject_claim(env: Env, bounty_id: u64, claim_id: u32) -> Result<(), Error> {
@@ -507,6 +557,11 @@ impl DepRaderRouter {
     /// in time can still be paid during the review window.
     pub fn release(env: Env, bounty_id: u64, claim_id: u32) -> Result<(), Error> {
         let admin = require_admin(&env)?;
+
+        if Self::is_paused(env.clone()) {
+            return Err(Error::Paused);
+        }
+
         let (mut bounty, mut claim) = load_open_pending(&env, bounty_id, claim_id)?;
 
         // State first, transfer last.

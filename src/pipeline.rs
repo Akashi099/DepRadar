@@ -460,3 +460,133 @@ fn finding(dependency: &Dependency, kind: FindingKind) -> Finding {
         kind,
     }
 }
+
+// ── watch pipeline (issue #96) ─────────────────────────────────────────────
+
+/// A source of package names, used by [`watch_packages`].
+///
+/// Production code connects this to a real registry crawler. Tests supply a
+/// [`FakeCrawler`] that returns a fixed list.
+pub trait PackageSource {
+    /// Returns the next batch of package names to score, or an empty `Vec`
+    /// when there is nothing new. The caller is responsible for polling at an
+    /// appropriate interval.
+    fn poll(&mut self) -> Vec<String>;
+}
+
+/// Confidence threshold below which a finding is not emitted by
+/// [`watch_packages`]. Matches the 40-point floor the combined scanner uses
+/// for a distance-only signal (`expresss` scores 40).
+pub const WATCH_CONFIDENCE_THRESHOLD: u8 = 40;
+
+/// Runs a continuous watch loop: polls `source` for new package names, scores
+/// each one with [`score_package`], and calls `on_finding` for every result
+/// whose confidence is at or above [`WATCH_CONFIDENCE_THRESHOLD`].
+///
+/// The loop runs until `source.poll()` returns an empty `Vec`. In production
+/// this never happens — the crawler blocks until new packages appear and
+/// returns them. In tests a [`FakeCrawler`] drains a fixed list so the loop
+/// terminates.
+///
+/// Findings are emitted as serialized JSON lines so they can be piped into
+/// downstream processors.
+pub fn watch_packages<S, F>(mut source: S, mut on_finding: F)
+where
+    S: PackageSource,
+    F: FnMut(String),
+{
+    loop {
+        let batch = source.poll();
+        if batch.is_empty() {
+            break;
+        }
+        for name in batch {
+            let result = score_package(&name);
+            if result.confidence >= WATCH_CONFIDENCE_THRESHOLD {
+                let line = serde_json::json!({
+                    "package": result.candidate,
+                    "confidence": result.confidence,
+                    "distance_match": result.distance_match.as_ref()
+                        .map(|(n, d)| serde_json::json!({ "name": n, "distance": d })),
+                    "homoglyph_match": result.homoglyph_match,
+                    "digit_swap_match": result.digit_swap_match,
+                    "scope_confusion": result.scope_confusion,
+                    "combosquat": result.combosquat,
+                });
+                on_finding(line.to_string());
+            }
+        }
+    }
+}
+
+/// A [`PackageSource`] backed by a fixed list, for use in tests.
+///
+/// Each call to [`poll`](FakeCrawler::poll) drains one chunk of
+/// `chunk_size` names. When the list is exhausted, `poll` returns an empty
+/// `Vec` so [`watch_packages`] terminates.
+pub struct FakeCrawler {
+    names: std::collections::VecDeque<String>,
+    chunk_size: usize,
+}
+
+impl FakeCrawler {
+    /// Creates a new [`FakeCrawler`] that will hand out `names` in chunks of
+    /// `chunk_size` per [`poll`](Self::poll) call.
+    pub fn new(names: impl IntoIterator<Item = impl Into<String>>, chunk_size: usize) -> Self {
+        Self {
+            names: names.into_iter().map(Into::into).collect(),
+            chunk_size: chunk_size.max(1),
+        }
+    }
+}
+
+impl PackageSource for FakeCrawler {
+    fn poll(&mut self) -> Vec<String> {
+        let n = self.chunk_size.min(self.names.len());
+        self.names.drain(..n).collect()
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+
+    #[test]
+    fn fake_crawler_emits_typosquat_finding() {
+        // "expresss" is one edit away from "express" — confidence 40.
+        let crawler = FakeCrawler::new(["expresss", "totally-legit-package-zzz123"], 10);
+        let mut findings = Vec::new();
+        watch_packages(crawler, |line| findings.push(line));
+
+        assert_eq!(findings.len(), 1, "only the typosquat should be emitted");
+        let v: serde_json::Value = serde_json::from_str(&findings[0]).unwrap();
+        assert_eq!(v["package"], "expresss");
+        assert!(v["confidence"].as_u64().unwrap() >= WATCH_CONFIDENCE_THRESHOLD as u64);
+    }
+
+    #[test]
+    fn clean_packages_produce_no_findings() {
+        let crawler = FakeCrawler::new(["totally-legit-zzz-package-x99z"], 10);
+        let mut findings = Vec::new();
+        watch_packages(crawler, |line| findings.push(line));
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn multiple_typosquats_are_all_emitted() {
+        // Both "expresss" and "reqiests" should fire.
+        let crawler = FakeCrawler::new(["expresss", "reqiests"], 10);
+        let mut findings = Vec::new();
+        watch_packages(crawler, |line| findings.push(line));
+        assert_eq!(findings.len(), 2);
+    }
+
+    #[test]
+    fn finding_is_valid_json_line() {
+        let crawler = FakeCrawler::new(["expresss"], 10);
+        let mut findings = Vec::new();
+        watch_packages(crawler, |line| findings.push(line));
+        // Must be parseable as JSON.
+        let _: serde_json::Value = serde_json::from_str(&findings[0]).expect("valid JSON line");
+    }
+}
