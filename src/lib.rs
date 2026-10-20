@@ -18,7 +18,9 @@ pub mod cve;
 pub mod ignore;
 pub mod lockfile;
 pub mod model;
+pub mod net;
 pub mod pipeline;
+pub mod registry;
 pub mod report;
 pub mod typosquat;
 
