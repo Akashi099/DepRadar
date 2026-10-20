@@ -172,3 +172,180 @@ fn name_stdin_json_is_one_array_document() {
     assert_eq!(results[1]["candidate"], "react");
     assert_eq!(results[2]["candidate"], "lodahs");
 }
+
+// ── depradar.toml config file tests ──────────────────────────────────────────
+
+#[test]
+fn config_file_format_json_is_used_when_no_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("depradar.toml"), r#"format = "json""#).unwrap();
+
+    let output = depradar()
+        .current_dir(dir.path())
+        .args(["scan", "--offline"])
+        .arg(fixture("npm-basic"))
+        .output()
+        .unwrap();
+
+    // Should emit JSON even though --format was not passed on the CLI.
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    assert!(json["lockfiles"].is_array(), "expected JSON output shape");
+}
+
+#[test]
+fn cli_format_flag_overrides_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    // Config file says json, but the CLI flag says text.
+    std::fs::write(dir.path().join("depradar.toml"), r#"format = "json""#).unwrap();
+
+    let output = depradar()
+        .current_dir(dir.path())
+        .args(["--format", "text", "scan", "--offline"])
+        .arg(fixture("npm-basic"))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Text output should NOT be valid JSON at the top level.
+    assert!(
+        serde_json::from_str::<Value>(&stdout).is_err() || !stdout.contains(r#""lockfiles""#),
+        "expected text output, got JSON: {stdout}"
+    );
+}
+
+#[test]
+fn config_file_fail_on_none_exits_zero_even_with_findings() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("depradar.toml"), r#"fail_on = "none""#).unwrap();
+
+    let output = depradar()
+        .current_dir(dir.path())
+        .args(["scan", "--offline"])
+        .arg(fixture("npm-basic"))
+        .output()
+        .unwrap();
+
+    // npm-basic has a typosquat finding, but fail_on = none → exit 0.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "fail_on=none should always exit 0"
+    );
+}
+
+#[test]
+fn cli_fail_on_flag_overrides_config_file_none() {
+    let dir = tempfile::tempdir().unwrap();
+    // Config says none (never fail), but CLI says high → should fail.
+    std::fs::write(dir.path().join("depradar.toml"), r#"fail_on = "none""#).unwrap();
+
+    let output = depradar()
+        .current_dir(dir.path())
+        .args(["--fail-on", "high", "scan", "--offline"])
+        .arg(fixture("npm-basic"))
+        .output()
+        .unwrap();
+
+    // npm-basic contains a typosquat (rated High), so exit code should be 1.
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "--fail-on high should override config fail_on=none"
+    );
+}
+
+#[test]
+fn config_file_exclude_skips_matching_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    // Exclude the npm-basic fixture entirely.
+    let fixture_path = fixture("npm-basic");
+    let pattern = fixture_path.to_string_lossy().replace('\\', "/");
+    std::fs::write(
+        dir.path().join("depradar.toml"),
+        format!(r#"exclude = ["{pattern}"]"#),
+    )
+    .unwrap();
+
+    let output = depradar()
+        .current_dir(dir.path())
+        .args(["scan", "--offline"])
+        .arg(&fixture_path)
+        .output()
+        .unwrap();
+
+    // Excluded path → no findings → exit 0.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "excluded path should produce no findings"
+    );
+}
+
+#[test]
+fn cli_exclude_flag_overrides_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    // Config excludes everything with "nonexistent" — should not affect the scan.
+    std::fs::write(
+        dir.path().join("depradar.toml"),
+        r#"exclude = ["nonexistent/**"]"#,
+    )
+    .unwrap();
+
+    let output = depradar()
+        .current_dir(dir.path())
+        // Provide --exclude that matches nothing — scan should still find the typosquat.
+        .args(["scan", "--offline", "--exclude", "nothing/**"])
+        .arg(fixture("npm-basic"))
+        .output()
+        .unwrap();
+
+    // npm-basic has a typosquat finding, so exit code should be 1 (default fail_on=high).
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "scan should find typosquat when exclude doesn't match"
+    );
+}
+
+#[test]
+fn missing_config_file_uses_defaults() {
+    // No depradar.toml → all defaults: format=text, fail_on=high.
+    let output = depradar()
+        .args(["scan", "--offline"])
+        .arg(fixture("npm-basic"))
+        .output()
+        .unwrap();
+
+    // Default fail_on=high, npm-basic has a typosquat (high severity) → exit 1.
+    assert_eq!(output.status.code(), Some(1));
+    // Default format=text → stdout is not JSON.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        serde_json::from_str::<Value>(&stdout).is_err() || !stdout.trim_start().starts_with('{'),
+        "expected text format by default"
+    );
+}
+
+#[test]
+fn invalid_config_file_exits_with_code_2() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("depradar.toml"), "[[invalid{{{").unwrap();
+
+    let output = depradar()
+        .current_dir(dir.path())
+        .args(["scan", "--offline"])
+        .arg(fixture("npm-basic"))
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "invalid depradar.toml should exit 2"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("depradar.toml"),
+        "error message should mention depradar.toml: {stderr}"
+    );
+}

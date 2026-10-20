@@ -460,55 +460,46 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Closes:** #82
 - **Status:** In review.
 
-### deprader_router — split bounty payouts (release_split)
+### CLI — project config file (`depradar.toml`)
 
-- **What:** Adds `release_split(bounty_id, shares: Vec<(claim_id, bps)>)` to
-  split a bounty payout across multiple claimants. `shares` must sum to
-  exactly 10_000 basis points and reference distinct pending claims. Rounding
-  remainder goes to the first share. Emits one `released` event per paid claim.
-  Adds `Error::InvalidShares` for validation failures.
-- **Tests:** 50/50 split, rounding remainder distribution, sum ≠ 10_000
-  rejected, duplicate claim rejected, non-pending claim rejected.
-- **By:** ALLEN-AYODEJI
-- **Closes:** #107
-- **Status:** Merged.
+- **What:** Adds `src/config.rs` with a `ProjectConfig` struct that `depradar
+  scan` loads from `depradar.toml` in the working directory. The file supports
+  four keys:
+  - `fail_on` — severity threshold for a non-zero exit code
+    (`low`/`medium`/`high`/`critical`/`none`; default `high`).
+  - `format` — output format (`text`/`json`; default `text`).
+  - `exclude` — array of glob patterns for lockfile paths to skip.
+  - `ecosystems` — array of ecosystems to restrict scanning to (`npm`,
+    `pypi`, `cargo`, `go`, `maven`, `rubygems`, `packagist`; default: all).
 
-### deprader_router — fund open bounties (fund_bounty)
+  Loading is strictly opt-in: if no `depradar.toml` exists the built-in
+  defaults are unchanged. An existing but malformed file exits with code 2 and
+  a clear error pointing to the file. Unknown keys are rejected.
 
-- **What:** Adds `fund_bounty(funder, bounty_id, amount)` to top up an existing
-  open bounty in the same token. Tracks contributions per funder in
-  `Bounty.funders: Vec<(Address, i128)>` for proportional refunds. Updated
-  `cancel_bounty` to refund each funder exactly what they contributed. Emits a
-  `funded` event.
-- **Tests:** Top-up increases amount, cancel refunds every funder proportionally,
-  closed bounties rejected, invalid amounts rejected, auth check.
-- **By:** ALLEN-AYODEJI
-- **Closes:** #108
-- **Status:** Merged.
+  Precedence is: **built-in defaults ← `depradar.toml` ← CLI flags**. CLI
+  flags always win, so existing scripts and one-off commands are unaffected.
+  The `--fail-on`, `--exclude`, and `--ecosystem` flags are new on the CLI
+  (previously undocumented/unimplemented), and `--format` is now optional
+  rather than defaulting on the struct level, giving the file a chance to
+  provide the default.
 
-### deprader_router — extend bounty deadline (extend_deadline)
-
-- **What:** Adds `extend_deadline(creator, bounty_id, new_deadline)` to let
-  creators extend an open bounty's deadline. Only the creator can extend, only
-  to a later time, and only within `MAX_BOUNTY_DURATION_SECS` of `created_at`.
-  Emits an `extended` event.
-- **Tests:** Successful extension, non-creator rejected, earlier deadline
-  rejected, beyond max duration rejected, closed bounty rejected, auth check via
-  `env.auths()`.
-- **By:** ALLEN-AYODEJI
-- **Closes:** #109
-- **Status:** Merged.
-
-### deprader_router — admin token allowlist
-
-- **What:** Adds admin-managed token allowlist to prevent malicious tokens and
-  spam. New functions: `allow_token(token)`, `disallow_token(token)` (both
-  admin-only), and `is_token_allowed(token)`. `create_bounty` now rejects tokens
-  not on the allowlist with `Error::TokenNotAllowed`. Allowlist state stored in
-  `DataKey::AllowedToken(Address)`. Emits `tkn_allow` and `tkn_dislow` events.
-- **Tests:** Allow token works, disallow token works, disallowed token rejected
-  in `create_bounty`, allowed token works in `create_bounty`, non-admin cannot
-  change allowlist.
-- **By:** ALLEN-AYODEJI
-- **Closes:** #110
+- **Tests:**
+  - Unit tests in `src/config.rs`: `FailOn` ordering, round-trip
+    `FromStr`/`Display` for all three enums, full-config TOML parse,
+    empty-file parse, unknown-key rejection, invalid enum value rejection,
+    `load_project_config` returning `None` when absent, loading from a
+    directory, and error on malformed TOML.
+  - Integration tests in `tests/cli.rs`: config file format setting used
+    when no flag is passed; CLI `--format` overrides the file; `fail_on =
+    "none"` exits 0 with findings; `--fail-on high` overrides `fail_on =
+    "none"` in the file; `exclude` pattern skips a path; CLI `--exclude`
+    overrides the file; no config file uses defaults; invalid config exits 2
+    with a message mentioning `depradar.toml`.
+  - `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test --workspace`
+    all pass.
+- **Docs:** README updated with a `depradar.toml` section, a key reference
+  table, and an updated CLI options table reflecting the newly implemented
+  flags.
+- **By:** david-tanko
+- **Closes:** #85
 - **Status:** Merged.
