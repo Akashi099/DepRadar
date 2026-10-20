@@ -9,6 +9,13 @@ use soroban_sdk::{
     Address, Env, String, Symbol, TryFromVal,
 };
 
+mod testutils {
+    soroban_sdk::contractimport!(
+        file = "../../target/wasm32-unknown-unknown/release/deprader_router.wasm"
+    );
+    pub type DepRaderRouterV2Client<'a> = Client<'a>;
+}
+
 const START: u64 = 1_000_000;
 const DEADLINE: u64 = START + 30 * 24 * 60 * 60;
 const AMOUNT: i128 = 400;
@@ -512,4 +519,231 @@ fn test_admin_rotation_is_two_step() {
     let (_, claim_id) = t.claim(bounty_id);
     t.client.release(&bounty_id, &claim_id);
     assert_eq!(t.last_auth(), new_admin);
+}
+
+// ------------------------------------------------------------ withdraw_claim
+
+#[test]
+fn test_claimant_can_withdraw_own_pending_claim() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (claimant, claim_id) = t.claim(bounty_id);
+
+    t.client.withdraw_claim(&claimant, &bounty_id, &claim_id);
+    assert_eq!(t.last_auth(), claimant);
+    assert_eq!(t.last_event_topic(), symbol_short!("withdrawn"));
+
+    let claim = t.client.get_claim(&bounty_id, &claim_id).unwrap();
+    assert_eq!(claim.status, ClaimStatus::Withdrawn);
+
+    let bounty = t.client.get_bounty(&bounty_id).unwrap();
+    assert_eq!(bounty.pending_claims, 0);
+}
+
+#[test]
+fn test_withdraw_claim_wrong_claimant_fails() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (_, claim_id) = t.claim(bounty_id);
+    let wrong_claimant = Address::generate(&t.env);
+
+    assert_eq!(
+        t.client
+            .try_withdraw_claim(&wrong_claimant, &bounty_id, &claim_id),
+        Err(Ok(Error::NotAuthorized))
+    );
+}
+
+#[test]
+fn test_withdraw_claim_already_rejected_fails() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (claimant, claim_id) = t.claim(bounty_id);
+
+    t.client.reject_claim(&bounty_id, &claim_id);
+
+    assert_eq!(
+        t.client
+            .try_withdraw_claim(&claimant, &bounty_id, &claim_id),
+        Err(Ok(Error::ClaimNotPending))
+    );
+}
+
+// -------------------------------------------------------------- pause/unpause
+
+#[test]
+fn test_pause_blocks_create_bounty() {
+    let t = setup();
+    t.client.pause();
+    assert_eq!(t.last_event_topic(), symbol_short!("paused"));
+    assert_eq!(t.client.is_paused(), true);
+
+    assert_eq!(
+        t.client.try_create_bounty(
+            &t.creator,
+            &t.s("org/repo#1"),
+            &AMOUNT,
+            &t.token.address,
+            &DEADLINE,
+        ),
+        Err(Ok(Error::Paused))
+    );
+}
+
+#[test]
+fn test_pause_blocks_submit_claim() {
+    let t = setup();
+    let bounty_id = t.create();
+    t.client.pause();
+
+    let claimant = Address::generate(&t.env);
+    assert_eq!(
+        t.client
+            .try_submit_claim(&bounty_id, &claimant, &t.s("proof")),
+        Err(Ok(Error::Paused))
+    );
+}
+
+#[test]
+fn test_pause_blocks_release() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (_, claim_id) = t.claim(bounty_id);
+    t.client.pause();
+
+    assert_eq!(
+        t.client.try_release(&bounty_id, &claim_id),
+        Err(Ok(Error::Paused))
+    );
+}
+
+#[test]
+fn test_admin_can_cancel_while_paused() {
+    let t = setup();
+    let bounty_id = t.create();
+    t.client.pause();
+
+    t.client.cancel_bounty(&t.admin, &bounty_id);
+    assert_eq!(t.token.balance(&t.creator), 1_000);
+}
+
+#[test]
+fn test_unpause_restores_functionality() {
+    let t = setup();
+    t.client.pause();
+    t.client.unpause();
+    assert_eq!(t.last_event_topic(), symbol_short!("unpaused"));
+    assert_eq!(t.client.is_paused(), false);
+
+    let bounty_id = t.create();
+    assert_eq!(bounty_id, 1);
+}
+
+#[test]
+fn test_pause_requires_admin_auth() {
+    let t = setup();
+    t.client.pause();
+    assert_eq!(t.last_auth(), t.admin);
+
+    t.client.unpause();
+    assert_eq!(t.last_auth(), t.admin);
+}
+
+// ------------------------------------------------------------ get_bounties
+
+#[test]
+fn test_get_bounties_first_page() {
+    let t = setup();
+    let id1 = t.create();
+    let id2 = t.create();
+    let id3 = t.create();
+
+    let result = t.client.get_bounties(&1, &2);
+    assert_eq!(result.len(), 2);
+    assert_eq!(result.get(0).unwrap().0, id1);
+    assert_eq!(result.get(1).unwrap().0, id2);
+}
+
+#[test]
+fn test_get_bounties_last_partial_page() {
+    let t = setup();
+    t.create();
+    t.create();
+    t.create();
+
+    let result = t.client.get_bounties(&2, &10);
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_get_bounties_start_beyond_count() {
+    let t = setup();
+    t.create();
+
+    let result = t.client.get_bounties(&100, &10);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_get_bounties_limit_cap() {
+    let t = setup();
+    for _ in 0..10 {
+        t.create();
+    }
+
+    let result = t.client.get_bounties(&1, &50);
+    assert_eq!(result.len(), 10);
+}
+
+#[test]
+fn test_get_bounties_zero_limit_fails() {
+    let t = setup();
+    assert_eq!(
+        t.client.try_get_bounties(&1, &0),
+        Err(Ok(Error::InvalidLimit))
+    );
+}
+
+#[test]
+fn test_get_bounties_over_limit_fails() {
+    let t = setup();
+    assert_eq!(
+        t.client.try_get_bounties(&1, &51),
+        Err(Ok(Error::InvalidLimit))
+    );
+}
+
+// ------------------------------------------------------------ upgrade
+
+#[test]
+fn test_upgrade_updates_contract_and_preserves_state() {
+    let t = setup();
+    let bounty_id = t.create();
+    let (claimant, _) = t.claim(bounty_id);
+
+    // Build the upgraded wasm and get its hash
+    let new_wasm = testutils::WASM;
+    let new_wasm_hash = t.env.deployer().upload_contract_wasm(new_wasm);
+
+    t.client.upgrade(&new_wasm_hash);
+    assert_eq!(t.last_auth(), t.admin);
+    assert_eq!(t.last_event_topic(), symbol_short!("upgraded"));
+
+    // State should still be there
+    let bounty = t.client.get_bounty(&bounty_id).unwrap();
+    assert_eq!(bounty.creator, t.creator);
+    assert_eq!(bounty.status, BountyStatus::Open);
+
+    let claim = t.client.get_claim(&bounty_id, &0).unwrap();
+    assert_eq!(claim.claimant, claimant);
+}
+
+#[test]
+fn test_upgrade_requires_admin_auth() {
+    let t = setup();
+    let new_wasm = testutils::WASM;
+    let new_wasm_hash = t.env.deployer().upload_contract_wasm(new_wasm);
+
+    t.client.upgrade(&new_wasm_hash);
+    assert_eq!(t.last_auth(), t.admin);
 }

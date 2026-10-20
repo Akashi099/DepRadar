@@ -460,92 +460,59 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Closes:** #82
 - **Status:** In review.
 
-### behavioral — suspicious-call scan for Python `setup.py`
+### deprader_router — withdraw_claim
 
-- **What:** Adds the `behavioral` analysis module (`src/behavioral/`) and
-  its first detector, `setup_py::scan_setup_py`
-  ([`setup_py.rs`](src/behavioral/setup_py.rs)). PyPI sdists execute
-  `setup.py` at install time, making it the direct analogue of npm
-  install scripts. The scanner is line-based (no Python AST): it strips
-  `#` comments (quote-aware), then flags `subprocess` usage (calls and
-  imports), `os.system(...)`, `exec(`/`eval(`, `base64.b64decode(...)`
-  (including direct `b64decode` imports), and `urllib`/`requests` calls —
-  each emitted as a `BehavioralFinding` with the 1-based line number.
-  Command-execution signals rate **high**; obfuscation and network calls
-  rate **medium** (see [docs/severity.md](docs/severity.md)). Dependency
-  *names* like `install_requires=['requests']` are not calls and don't
-  trigger.
-- **Tests:** A normal setuptools `setup.py` fixture scans clean; a
-  malicious sample flags every call kind at the right line number
-  (commented-out `eval` excluded); unit tests cover trailing comments,
-  `#` inside strings, lookalike identifiers (`peval`, `os.system = ...`),
-  per-line dedupe, and the direct-`b64decode` import.
-- **By:** iam-mercy
-- **Closes:** #103
-- **Status:** In review.
+- **What:** Adds `withdraw_claim(claimant, bounty_id, claim_id)` for
+  researchers to retract their own pending claims. Checks claimant auth and
+  claim status (must be `Pending`). Adds `ClaimStatus::Withdrawn` variant,
+  decrements `pending_claims`, and emits a `withdrawn` event.
+- **Tests:** Tests cover the happy path, wrong claimant auth fails with
+  `NotAuthorized`, and already-rejected claims fail with `ClaimNotPending`.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #111
+- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
+  test --workspace` pass. Contract test snapshots updated. Wasm build
+  succeeds.
 
-### behavioral — flag native binaries shipped inside packages
+### deprader_router — emergency pause switch
 
-- **What:** Adds [`binaries.rs`](src/behavioral/binaries.rs):
-  `scan_binaries` walks an unpacked package tree and reports every file
-  that either carries an ELF (`\x7fELF`), PE (`MZ`) or Mach-O
-  (`FEEDFACE`/`FEEDFACF`, both endians) magic header, or has a native
-  extension (`.exe`, `.dll`, `.so`, `.dylib`, including versioned
-  `libfoo.so.1`). Magic bytes are checked before extensions, so an
-  extension-less ELF is still caught and a text file named `.dylib` is
-  still listed. Emits one low-severity informational finding listing all
-  binaries — prebuilt executables can't be code-reviewed, but real
-  projects ship legitimate native addons, so it's a review prompt, not a
-  red flag.
-- **Tests:** Small fake headers for each format (ELF, PE, 64-bit LE and
-  32-bit BE Mach-O, plus non-magic short/empty buffers); extension
-  matching incl. `libfoo.so.1.2.3` and negative cases; a tempdir tree
-  mixing magic-hit, extension-only, nested and clean files; the
-  informational finding's low severity and file list; empty result for a
-  binary-free package.
-- **By:** iam-mercy
-- **Closes:** #104
-- **Status:** In review.
+- **What:** Adds `pause()` / `unpause()` (admin-only) and `is_paused()` to
+  halt fund movements during emergency response. While paused,
+  `create_bounty`, `submit_claim` and `release` fail with `Error::Paused`.
+  `cancel_bounty` by admin still works when paused so locked funds can be
+  returned. Adds `DataKey::Paused`, `Error::Paused`, and emits `paused` /
+  `unpaused` events.
+- **Tests:** Tests cover every gated function (create, submit, release),
+  admin refund path, unpause restore, and admin auth requirement.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #112
+- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
+  test --workspace` pass. Contract test snapshots updated. Wasm build
+  succeeds.
 
-### behavioral — diff two package versions for risky changes
+### deprader_router — admin-gated contract upgrade
 
-- **What:** Adds [`diff.rs`](src/behavioral/diff.rs): `diff_versions(old,
-  new)` compares two unpacked package trees and reports added/removed
-  files, install scripts present in `new` but not `old` (a root
-  `setup.py`, or npm `preinstall`/`install`/`postinstall` entries in
-  `package.json`), and suspicious `setup.py` calls new in `new`. Calls
-  are matched by file and kind (not line), so ordinary line shifts from a
-  version bump create no noise. `PackageDiff::is_clean()` is true when
-  only benign files changed. New install scripts rate medium; new calls
-  inherit their kind's level.
-- **Tests:** Fixture pairs under
-  [`tests/fixtures/behavioral/`](tests/fixtures/behavioral): `leftpad-lite`
-  v1 (clean npm package) vs v2 (adds a malicious `setup.py` — the
-  headline case), identical trees (clean), v1 vs a docs-only bump (added
-  file alone stays clean), `beacon` v1/v2 (pre-existing `requests.get`
-  not re-reported, only the new `b64decode`), and `npmish` v1/v2 (new
-  `postinstall` in `package.json`).
-- **By:** iam-mercy
-- **Closes:** #105
-- **Status:** In review.
+- **What:** Adds `upgrade(new_wasm_hash)` (admin-only) that calls
+  `env.deployer().update_current_contract_wasm`. Emits an `upgraded` event.
+  State survives upgrades. Documents the upgrade procedure in
+  `DEPLOYMENT.md`.
+- **Tests:** Test uploads a second WASM, upgrades to it, and verifies stored
+  bounties and claims persist. Admin auth requirement tested.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #113
+- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
+  test --workspace` pass. Contract test snapshots updated. Wasm build
+  succeeds. All commands and links in the new docs verified.
 
-### docs — finding severity model
+### deprader_router — paginated bounty listing getter
 
-- **What:** Adds [`docs/severity.md`](docs/severity.md), the single place
-  defining what low, medium, high and critical mean in DepRadar. It
-  defines each level, gives a rated example per `FindingKind` (homoglyph
-  typosquat → critical, distance typosquat → high, vulnerability → its
-  advisory's level, unrated advisory → high) and per behavioral signal
-  (setup.py command execution → high, obfuscation/network → medium,
-  native binaries → low, new install script between versions → medium),
-  documents the CVSS v3 mapping (0.0–3.9 low, 4.0–6.9 medium, 7.0–8.9
-  high, 9.0–10.0 critical, per the CVSS v3.1 qualitative ratings) and
-  the label fallback, and explains how severity flows into `--fail-on`,
-  SARIF levels and `security-severity`, plus guidance for detector
-  authors. Linked from [README.md](README.md) (CLI section) and
-  [CONTRIBUTING.md](CONTRIBUTING.md) (PR checklist); all commands and
-  relative links verified.
-- **Tests:** N/A (documentation only).
-- **By:** iam-mercy
-- **Closes:** #106
-- **Status:** In review.
+- **What:** Adds `get_bounties(start_id, limit) -> Vec<(u64, Bounty)>` to
+  read multiple bounties in one call instead of N RPC round trips. Limit is
+  capped at 50. Skips missing IDs. Adds `Error::InvalidLimit`.
+- **Tests:** Tests cover first page, last partial page, start beyond count,
+  limit cap, zero limit fails, and over-limit fails.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #114
+- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
+  test --workspace` pass. Contract test snapshots updated. Wasm build
+  succeeds.

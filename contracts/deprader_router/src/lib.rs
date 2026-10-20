@@ -52,6 +52,7 @@ pub enum ClaimStatus {
     Pending,
     Rejected,
     Accepted,
+    Withdrawn,
 }
 
 #[contracttype]
@@ -89,6 +90,8 @@ enum DataKey {
     Bounty(u64),
     Claim(u64, u32),
     ClaimBy(u64, Address),
+    Paused,
+    WasmHash,
 }
 
 #[contracterror]
@@ -109,6 +112,8 @@ pub enum Error {
     ClaimNotPending = 17,
     CancelTooEarly = 18,
     NoPendingAdmin = 19,
+    Paused = 20,
+    InvalidLimit = 21,
 }
 
 #[contract]
@@ -173,6 +178,36 @@ impl DepRaderRouter {
         env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
+    // ------------------------------------------------------------- pause
+
+    /// Admin-only: pauses the contract to prevent new fund movements.
+    pub fn pause(env: Env) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+        env.storage().instance().set(&DataKey::Paused, &true);
+        bump_instance(&env);
+
+        env.events().publish((symbol_short!("paused"),), admin);
+        Ok(())
+    }
+
+    /// Admin-only: unpauses the contract.
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+        env.storage().instance().set(&DataKey::Paused, &false);
+        bump_instance(&env);
+
+        env.events().publish((symbol_short!("unpaused"),), admin);
+        Ok(())
+    }
+
+    /// Returns true if the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
     // ------------------------------------------------------------- bounties
 
     /// Locks `amount` of `token` from `creator` against a new bounty and
@@ -187,6 +222,10 @@ impl DepRaderRouter {
         deadline: u64,
     ) -> Result<u64, Error> {
         creator.require_auth();
+
+        if Self::is_paused(env.clone()) {
+            return Err(Error::Paused);
+        }
 
         stored_admin(&env)?;
         if amount <= 0 {
@@ -249,6 +288,42 @@ impl DepRaderRouter {
         next - 1
     }
 
+    /// Returns a list of bounties starting from `start_id` with a maximum of
+    /// `limit` bounties. Limit is capped at 50. Skips missing IDs.
+    pub fn get_bounties(
+        env: Env,
+        start_id: u64,
+        limit: u32,
+    ) -> Result<soroban_sdk::Vec<(u64, Bounty)>, Error> {
+        const MAX_LIMIT: u32 = 50;
+        if limit == 0 || limit > MAX_LIMIT {
+            return Err(Error::InvalidLimit);
+        }
+
+        let mut result = soroban_sdk::Vec::new(&env);
+        let mut current_id = start_id;
+        let mut count = 0u32;
+
+        while count < limit {
+            if let Some(bounty) = env.storage().persistent().get(&DataKey::Bounty(current_id)) {
+                result.push_back((current_id, bounty));
+                count += 1;
+            }
+            current_id += 1;
+            // Stop if we've gone beyond what could reasonably exist
+            let next_bounty_id: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::NextBountyId)
+                .unwrap_or(1);
+            if current_id >= next_bounty_id {
+                break;
+            }
+        }
+
+        Ok(result)
+    }
+
     /// Refunds an open bounty to its creator.
     ///
     /// - The admin may cancel at any time (e.g. the finding was invalid).
@@ -265,7 +340,13 @@ impl DepRaderRouter {
             return Err(Error::BountyNotOpen);
         }
 
-        if stored_admin(&env)? != caller {
+        let is_admin = stored_admin(&env)? == caller;
+        // Admin can cancel even when paused to return funds
+        if !is_admin && Self::is_paused(env.clone()) {
+            return Err(Error::Paused);
+        }
+
+        if !is_admin {
             if caller != bounty.creator {
                 return Err(Error::NotAuthorized);
             }
@@ -307,6 +388,11 @@ impl DepRaderRouter {
         proof_ref: String,
     ) -> Result<u32, Error> {
         claimant.require_auth();
+
+        if Self::is_paused(env.clone()) {
+            return Err(Error::Paused);
+        }
+
         check_ref(&proof_ref)?;
 
         let key = DataKey::Bounty(bounty_id);
@@ -359,6 +445,40 @@ impl DepRaderRouter {
             .get(&DataKey::ClaimBy(bounty_id, claimant))
     }
 
+    /// Allows a claimant to withdraw their own pending claim.
+    pub fn withdraw_claim(
+        env: Env,
+        claimant: Address,
+        bounty_id: u64,
+        claim_id: u32,
+    ) -> Result<(), Error> {
+        claimant.require_auth();
+
+        let key = DataKey::Bounty(bounty_id);
+        let mut bounty: Bounty = get_persistent(&env, &key).ok_or(Error::BountyNotFound)?;
+
+        let claim_key = DataKey::Claim(bounty_id, claim_id);
+        let mut claim: Claim = get_persistent(&env, &claim_key).ok_or(Error::ClaimNotFound)?;
+
+        if claim.claimant != claimant {
+            return Err(Error::NotAuthorized);
+        }
+        if claim.status != ClaimStatus::Pending {
+            return Err(Error::ClaimNotPending);
+        }
+
+        claim.status = ClaimStatus::Withdrawn;
+        set_persistent(&env, &claim_key, &claim);
+        bounty.pending_claims -= 1;
+        set_persistent(&env, &key, &bounty);
+
+        env.events().publish(
+            (symbol_short!("withdrawn"), bounty_id),
+            (claim_id, claimant),
+        );
+        Ok(())
+    }
+
     /// Admin-only: marks a pending claim as rejected. The bounty stays open
     /// for other claims.
     pub fn reject_claim(env: Env, bounty_id: u64, claim_id: u32) -> Result<(), Error> {
@@ -380,6 +500,11 @@ impl DepRaderRouter {
     /// in time can still be paid during the review window.
     pub fn release(env: Env, bounty_id: u64, claim_id: u32) -> Result<(), Error> {
         let admin = require_admin(&env)?;
+
+        if Self::is_paused(env.clone()) {
+            return Err(Error::Paused);
+        }
+
         let (mut bounty, mut claim) = load_open_pending(&env, bounty_id, claim_id)?;
 
         // State first, transfer last.
@@ -399,6 +524,19 @@ impl DepRaderRouter {
             (symbol_short!("released"), bounty_id),
             (claim_id, claim.claimant, bounty.amount, admin),
         );
+        Ok(())
+    }
+
+    // ------------------------------------------------------------- upgrade
+
+    /// Admin-only: upgrades the contract to a new WASM hash.
+    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        env.events()
+            .publish((symbol_short!("upgraded"),), (admin, new_wasm_hash));
         Ok(())
     }
 }
