@@ -251,8 +251,7 @@ fn credential_access(line: &str) -> bool {
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
         "~/.ssh",
-        ".ssh/",
-        ".ssh/id_",
+        ".ssh",
         "~/.npmrc",
         ".npmrc",
     ];
