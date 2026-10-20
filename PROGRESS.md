@@ -459,3 +459,79 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** eeshasalaudeen734-creator
 - **Closes:** #82
 - **Status:** In review.
+
+
+### crawler — shared rate limiter and polite HTTP client
+
+- **What:** Adds [`src/net.rs`](src/net.rs) with `PoliteClient`, the one
+  blocking HTTP client every crawler shares. It wraps `reqwest::blocking`
+  with a descriptive User-Agent (`DEFAULT_USER_AGENT`, names DepRadar and
+  links the repo — required by crates.io's crawler policy), a request
+  timeout (`DEFAULT_TIMEOUT`, 15s), and a per-host token-bucket rate limit
+  of capacity one (`DEFAULT_PER_HOST_RATE`, 1 req/s per host): one token
+  refills every `per_host_rate`, so requests to the same host are spaced
+  evenly. `get`/`get_text`/`get_json` wait for a token before sending.
+- **Tests:** Unit tests on the bucket (one immediate request, then delay;
+  refill after a full period); against mockito mock servers, N requests
+  take at least `(N-1) × rate`, two different hosts don't share a bucket,
+  invalid URLs are rejected before any request, and non-2xx statuses are
+  reported.
+- **By:** orsar-rita
+- **Closes:** #93
+- **Status:** In review.
+
+### crawler — PyPI new-package crawler
+
+- **What:** Adds [`src/crawler/pypi.rs`](src/crawler/pypi.rs).
+  `PypiCrawler::poll(PypiFeed)` fetches `https://pypi.org/rss/packages.xml`
+  (new projects) or `/rss/updates.xml` (new releases) through
+  `PoliteClient`, parses the RSS 2.0 body with a small hand-rolled
+  `<item>`/`<guid>`/`<title>`/`<link>`/`<pubDate>` extractor (`parse_feed`,
+  XML entities unescaped), and dedupes against a per-feed `Checkpoint` —
+  the GUID and publish time of the newest item seen last poll. Items are
+  reported newest-first; re-polling an unchanged feed yields nothing, and
+  when the checkpoint GUID ages out of the feed, RFC 822 publish times
+  (parsed to epoch seconds, no date crate) take over the comparison.
+- **Tests:** Fixture RSS bodies cover item order, entity unescaping,
+  empty feeds, malformed (non-RSS) bodies, epoch conversion of known
+  dates, checkpoint dedupe (same feed twice, new item on top, GUID aged
+  out), and two-poll dedupe plus per-feed checkpoints against a mockito
+  server.
+- **By:** orsar-rita
+- **Closes:** #91
+- **Status:** In review.
+
+### crawler — crates.io new-crate crawler
+
+- **What:** Adds [`src/crawler/crates.rs`](src/crawler/crates.rs).
+  `CratesCrawler::crawl_new` pages
+  `GET /api/v1/crates?sort=new&per_page=100&page=N` through `PoliteClient`
+  and stops when it reaches the `Checkpoint` crate (the newest crate seen
+  last crawl), a short page, or a `max_pages` safety net — so a lost
+  checkpoint can't walk the whole registry. Policy compliance is documented
+  in the module docs: the User-Agent and the ≤1 req/s limit come from
+  `PoliteClient`, and this crawler has no other HTTP path.
+- **Tests:** Mocked tests cover the API page shape, paging until the
+  checkpoint crate on page 2, dedupe across two crawls, the `max_pages`
+  cap, and stopping on a short page.
+- **By:** orsar-rita
+- **Closes:** #92
+- **Status:** In review.
+
+### registry — npm package metadata fetch
+
+- **What:** Adds [`src/registry/npm.rs`](src/registry/npm.rs).
+  `fetch_npm_metadata(name)` fetches `https://registry.npmjs.org/<name>`
+  via `PoliteClient` and reduces the document to
+  `PackageMeta { name, maintainers, created, modified, repository,
+  latest, versions_count }`. Scoped names are URL-encoded (`/` → `%2F`),
+  so `@types/node` is fetched from `/@types%2Fnode`; `repository` accepts
+  both the bare-string and object form the registry serves. A
+  `fetch_npm_metadata_with` variant takes a caller-supplied client so a
+  whole crawl shares one rate-limit budget.
+- **Tests:** Fixture documents (lodash, `@types/node`) cover both
+  repository forms, maintainer usernames, missing optional fields, and a
+  mockito test asserts the encoded path is requested for a scoped name.
+- **By:** orsar-rita
+- **Closes:** #94
+- **Status:** In review.
