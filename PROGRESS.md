@@ -460,59 +460,55 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Closes:** #82
 - **Status:** In review.
 
-### deprader_router — withdraw_claim
+### deprader_router — split bounty payouts (release_split)
 
-- **What:** Adds `withdraw_claim(claimant, bounty_id, claim_id)` for
-  researchers to retract their own pending claims. Checks claimant auth and
-  claim status (must be `Pending`). Adds `ClaimStatus::Withdrawn` variant,
-  decrements `pending_claims`, and emits a `withdrawn` event.
-- **Tests:** Tests cover the happy path, wrong claimant auth fails with
-  `NotAuthorized`, and already-rejected claims fail with `ClaimNotPending`.
+- **What:** Adds `release_split(bounty_id, shares: Vec<(claim_id, bps)>)` to
+  split a bounty payout across multiple claimants. `shares` must sum to
+  exactly 10_000 basis points and reference distinct pending claims. Rounding
+  remainder goes to the first share. Emits one `released` event per paid claim.
+  Adds `Error::InvalidShares` for validation failures.
+- **Tests:** 50/50 split, rounding remainder distribution, sum ≠ 10_000
+  rejected, duplicate claim rejected, non-pending claim rejected.
 - **By:** ALLEN-AYODEJI
-- **Closes:** #111
-- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
-  test --workspace` pass. Contract test snapshots updated. Wasm build
-  succeeds.
+- **Closes:** #107
+- **Status:** Merged.
 
-### deprader_router — emergency pause switch
+### deprader_router — fund open bounties (fund_bounty)
 
-- **What:** Adds `pause()` / `unpause()` (admin-only) and `is_paused()` to
-  halt fund movements during emergency response. While paused,
-  `create_bounty`, `submit_claim` and `release` fail with `Error::Paused`.
-  `cancel_bounty` by admin still works when paused so locked funds can be
-  returned. Adds `DataKey::Paused`, `Error::Paused`, and emits `paused` /
-  `unpaused` events.
-- **Tests:** Tests cover every gated function (create, submit, release),
-  admin refund path, unpause restore, and admin auth requirement.
+- **What:** Adds `fund_bounty(funder, bounty_id, amount)` to top up an existing
+  open bounty in the same token. Tracks contributions per funder in
+  `Bounty.funders: Vec<(Address, i128)>` for proportional refunds. Updated
+  `cancel_bounty` to refund each funder exactly what they contributed. Emits a
+  `funded` event.
+- **Tests:** Top-up increases amount, cancel refunds every funder proportionally,
+  closed bounties rejected, invalid amounts rejected, auth check.
 - **By:** ALLEN-AYODEJI
-- **Closes:** #112
-- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
-  test --workspace` pass. Contract test snapshots updated. Wasm build
-  succeeds.
+- **Closes:** #108
+- **Status:** Merged.
 
-### deprader_router — admin-gated contract upgrade
+### deprader_router — extend bounty deadline (extend_deadline)
 
-- **What:** Adds `upgrade(new_wasm_hash)` (admin-only) that calls
-  `env.deployer().update_current_contract_wasm`. Emits an `upgraded` event.
-  State survives upgrades. Documents the upgrade procedure in
-  `DEPLOYMENT.md`.
-- **Tests:** Test uploads a second WASM, upgrades to it, and verifies stored
-  bounties and claims persist. Admin auth requirement tested.
+- **What:** Adds `extend_deadline(creator, bounty_id, new_deadline)` to let
+  creators extend an open bounty's deadline. Only the creator can extend, only
+  to a later time, and only within `MAX_BOUNTY_DURATION_SECS` of `created_at`.
+  Emits an `extended` event.
+- **Tests:** Successful extension, non-creator rejected, earlier deadline
+  rejected, beyond max duration rejected, closed bounty rejected, auth check via
+  `env.auths()`.
 - **By:** ALLEN-AYODEJI
-- **Closes:** #113
-- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
-  test --workspace` pass. Contract test snapshots updated. Wasm build
-  succeeds. All commands and links in the new docs verified.
+- **Closes:** #109
+- **Status:** Merged.
 
-### deprader_router — paginated bounty listing getter
+### deprader_router — admin token allowlist
 
-- **What:** Adds `get_bounties(start_id, limit) -> Vec<(u64, Bounty)>` to
-  read multiple bounties in one call instead of N RPC round trips. Limit is
-  capped at 50. Skips missing IDs. Adds `Error::InvalidLimit`.
-- **Tests:** Tests cover first page, last partial page, start beyond count,
-  limit cap, zero limit fails, and over-limit fails.
+- **What:** Adds admin-managed token allowlist to prevent malicious tokens and
+  spam. New functions: `allow_token(token)`, `disallow_token(token)` (both
+  admin-only), and `is_token_allowed(token)`. `create_bounty` now rejects tokens
+  not on the allowlist with `Error::TokenNotAllowed`. Allowlist state stored in
+  `DataKey::AllowedToken(Address)`. Emits `tkn_allow` and `tkn_dislow` events.
+- **Tests:** Allow token works, disallow token works, disallowed token rejected
+  in `create_bounty`, allowed token works in `create_bounty`, non-admin cannot
+  change allowlist.
 - **By:** ALLEN-AYODEJI
-- **Closes:** #114
-- **Status:** Merged. `cargo fmt`, `cargo clippy -D warnings`, and `cargo
-  test --workspace` pass. Contract test snapshots updated. Wasm build
-  succeeds.
+- **Closes:** #110
+- **Status:** Merged.

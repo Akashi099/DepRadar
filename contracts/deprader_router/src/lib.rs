@@ -71,6 +71,8 @@ pub struct Bounty {
     pub claim_count: u32,
     /// Claims still awaiting an admin decision.
     pub pending_claims: u32,
+    /// Track contributions per funder for proportional refunds.
+    pub funders: soroban_sdk::Vec<(Address, i128)>,
 }
 
 #[contracttype]
@@ -90,8 +92,7 @@ enum DataKey {
     Bounty(u64),
     Claim(u64, u32),
     ClaimBy(u64, Address),
-    Paused,
-    WasmHash,
+    AllowedToken(Address),
 }
 
 #[contracterror]
@@ -112,8 +113,8 @@ pub enum Error {
     ClaimNotPending = 17,
     CancelTooEarly = 18,
     NoPendingAdmin = 19,
-    Paused = 20,
-    InvalidLimit = 21,
+    InvalidShares = 20,
+    TokenNotAllowed = 21,
 }
 
 #[contract]
@@ -178,33 +179,33 @@ impl DepRaderRouter {
         env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
-    // ------------------------------------------------------------- pause
+    // --------------------------------------------------- token allowlist
 
-    /// Admin-only: pauses the contract to prevent new fund movements.
-    pub fn pause(env: Env) -> Result<(), Error> {
+    /// Admin-only: adds a token to the allowlist.
+    pub fn allow_token(env: Env, token: Address) -> Result<(), Error> {
         let admin = require_admin(&env)?;
-        env.storage().instance().set(&DataKey::Paused, &true);
-        bump_instance(&env);
-
-        env.events().publish((symbol_short!("paused"),), admin);
+        set_persistent(&env, &DataKey::AllowedToken(token.clone()), &true);
+        env.events()
+            .publish((symbol_short!("tkn_allow"),), (token, admin));
         Ok(())
     }
 
-    /// Admin-only: unpauses the contract.
-    pub fn unpause(env: Env) -> Result<(), Error> {
+    /// Admin-only: removes a token from the allowlist.
+    pub fn disallow_token(env: Env, token: Address) -> Result<(), Error> {
         let admin = require_admin(&env)?;
-        env.storage().instance().set(&DataKey::Paused, &false);
-        bump_instance(&env);
-
-        env.events().publish((symbol_short!("unpaused"),), admin);
-        Ok(())
-    }
-
-    /// Returns true if the contract is currently paused.
-    pub fn is_paused(env: Env) -> bool {
         env.storage()
-            .instance()
-            .get(&DataKey::Paused)
+            .persistent()
+            .remove(&DataKey::AllowedToken(token.clone()));
+        env.events()
+            .publish((symbol_short!("tkn_dislow"),), (token, admin));
+        Ok(())
+    }
+
+    /// Checks if a token is on the allowlist.
+    pub fn is_token_allowed(env: Env, token: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AllowedToken(token))
             .unwrap_or(false)
     }
 
@@ -228,6 +229,9 @@ impl DepRaderRouter {
         }
 
         stored_admin(&env)?;
+        if !Self::is_token_allowed(env.clone(), token.clone()) {
+            return Err(Error::TokenNotAllowed);
+        }
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -247,6 +251,9 @@ impl DepRaderRouter {
             .set(&DataKey::NextBountyId, &(bounty_id + 1));
         bump_instance(&env);
 
+        let mut funders = soroban_sdk::Vec::new(&env);
+        funders.push_back((creator.clone(), amount));
+
         let bounty = Bounty {
             creator: creator.clone(),
             issue_ref,
@@ -257,6 +264,7 @@ impl DepRaderRouter {
             deadline,
             claim_count: 0,
             pending_claims: 0,
+            funders,
         };
         set_persistent(&env, &DataKey::Bounty(bounty_id), &bounty);
 
@@ -288,40 +296,88 @@ impl DepRaderRouter {
         next - 1
     }
 
-    /// Returns a list of bounties starting from `start_id` with a maximum of
-    /// `limit` bounties. Limit is capped at 50. Skips missing IDs.
-    pub fn get_bounties(
+    /// Adds funds to an existing open bounty in the same token.
+    pub fn fund_bounty(
         env: Env,
-        start_id: u64,
-        limit: u32,
-    ) -> Result<soroban_sdk::Vec<(u64, Bounty)>, Error> {
-        const MAX_LIMIT: u32 = 50;
-        if limit == 0 || limit > MAX_LIMIT {
-            return Err(Error::InvalidLimit);
+        funder: Address,
+        bounty_id: u64,
+        amount: i128,
+    ) -> Result<(), Error> {
+        funder.require_auth();
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
         }
 
-        let mut result = soroban_sdk::Vec::new(&env);
-        let mut current_id = start_id;
-        let mut count = 0u32;
+        let key = DataKey::Bounty(bounty_id);
+        let mut bounty: Bounty = get_persistent(&env, &key).ok_or(Error::BountyNotFound)?;
+        if bounty.status != BountyStatus::Open {
+            return Err(Error::BountyNotOpen);
+        }
 
-        while count < limit {
-            if let Some(bounty) = env.storage().persistent().get(&DataKey::Bounty(current_id)) {
-                result.push_back((current_id, bounty));
-                count += 1;
-            }
-            current_id += 1;
-            // Stop if we've gone beyond what could reasonably exist
-            let next_bounty_id: u64 = env
-                .storage()
-                .instance()
-                .get(&DataKey::NextBountyId)
-                .unwrap_or(1);
-            if current_id >= next_bounty_id {
+        // Track this contribution for proportional refunds
+        let mut found = false;
+        for i in 0..bounty.funders.len() {
+            let (addr, existing) = bounty.funders.get(i).unwrap();
+            if addr == funder {
+                bounty.funders.set(i, (addr, existing + amount));
+                found = true;
                 break;
             }
         }
+        if !found {
+            bounty.funders.push_back((funder.clone(), amount));
+        }
 
-        Ok(result)
+        bounty.amount += amount;
+        set_persistent(&env, &key, &bounty);
+
+        token::Client::new(&env, &bounty.token).transfer(
+            &funder,
+            &env.current_contract_address(),
+            &amount,
+        );
+
+        env.events().publish(
+            (symbol_short!("funded"), bounty_id),
+            (funder, amount),
+        );
+        Ok(())
+    }
+
+    /// Extends the deadline of an open bounty. Only the creator can extend,
+    /// and only to a later time within MAX_BOUNTY_DURATION_SECS of created_at.
+    pub fn extend_deadline(
+        env: Env,
+        creator: Address,
+        bounty_id: u64,
+        new_deadline: u64,
+    ) -> Result<(), Error> {
+        creator.require_auth();
+
+        let key = DataKey::Bounty(bounty_id);
+        let mut bounty: Bounty = get_persistent(&env, &key).ok_or(Error::BountyNotFound)?;
+        if bounty.status != BountyStatus::Open {
+            return Err(Error::BountyNotOpen);
+        }
+        if bounty.creator != creator {
+            return Err(Error::NotAuthorized);
+        }
+        if new_deadline <= bounty.deadline {
+            return Err(Error::InvalidDeadline);
+        }
+        if new_deadline - bounty.created_at > MAX_BOUNTY_DURATION_SECS {
+            return Err(Error::InvalidDeadline);
+        }
+
+        bounty.deadline = new_deadline;
+        set_persistent(&env, &key, &bounty);
+
+        env.events().publish(
+            (symbol_short!("extended"), bounty_id),
+            (creator, new_deadline),
+        );
+        Ok(())
     }
 
     /// Refunds an open bounty to its creator.
@@ -362,11 +418,12 @@ impl DepRaderRouter {
         bounty.status = BountyStatus::Cancelled;
         set_persistent(&env, &key, &bounty);
 
-        token::Client::new(&env, &bounty.token).transfer(
-            &env.current_contract_address(),
-            &bounty.creator,
-            &bounty.amount,
-        );
+        // Refund each funder proportionally
+        let token_client = token::Client::new(&env, &bounty.token);
+        for i in 0..bounty.funders.len() {
+            let (funder, amount) = bounty.funders.get(i).unwrap();
+            token_client.transfer(&env.current_contract_address(), &funder, &amount);
+        }
 
         env.events().publish(
             (symbol_short!("cancelled"), bounty_id),
@@ -527,16 +584,86 @@ impl DepRaderRouter {
         Ok(())
     }
 
-    // ------------------------------------------------------------- upgrade
-
-    /// Admin-only: upgrades the contract to a new WASM hash.
-    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), Error> {
+    /// Admin-only: splits the bounty payout across multiple claimants.
+    /// `shares` is a vector of (claim_id, basis_points) that must sum to 10_000.
+    /// Rounding remainder goes to the first share.
+    pub fn release_split(
+        env: Env,
+        bounty_id: u64,
+        shares: soroban_sdk::Vec<(u32, u32)>,
+    ) -> Result<(), Error> {
         let admin = require_admin(&env)?;
 
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        let key = DataKey::Bounty(bounty_id);
+        let mut bounty: Bounty = get_persistent(&env, &key).ok_or(Error::BountyNotFound)?;
+        if bounty.status != BountyStatus::Open {
+            return Err(Error::BountyNotOpen);
+        }
 
-        env.events()
-            .publish((symbol_short!("upgraded"),), (admin, new_wasm_hash));
+        // Validate shares sum to 10_000 and are distinct pending claims
+        let mut total_bps: u32 = 0;
+        let mut seen_claims = soroban_sdk::Vec::new(&env);
+        for i in 0..shares.len() {
+            let (claim_id, bps) = shares.get(i).unwrap();
+            total_bps = total_bps.checked_add(bps).ok_or(Error::InvalidShares)?;
+
+            // Check for duplicates
+            for j in 0..seen_claims.len() {
+                if seen_claims.get(j).unwrap() == claim_id {
+                    return Err(Error::InvalidShares);
+                }
+            }
+            seen_claims.push_back(claim_id);
+
+            // Verify claim is pending
+            let claim: Claim = get_persistent(&env, &DataKey::Claim(bounty_id, claim_id))
+                .ok_or(Error::ClaimNotFound)?;
+            if claim.status != ClaimStatus::Pending {
+                return Err(Error::ClaimNotPending);
+            }
+        }
+
+        if total_bps != 10_000 {
+            return Err(Error::InvalidShares);
+        }
+
+        // Calculate and distribute payouts
+        let token_client = token::Client::new(&env, &bounty.token);
+        let mut total_paid: i128 = 0;
+
+        for i in 0..shares.len() {
+            let (claim_id, bps) = shares.get(i).unwrap();
+            let mut claim: Claim =
+                get_persistent(&env, &DataKey::Claim(bounty_id, claim_id)).unwrap();
+
+            let payout = if i == 0 {
+                // First share gets remainder
+                bounty.amount - total_paid
+            } else {
+                (bounty.amount * (bps as i128)) / 10_000
+            };
+
+            claim.status = ClaimStatus::Accepted;
+            set_persistent(&env, &DataKey::Claim(bounty_id, claim_id), &claim);
+
+            token_client.transfer(
+                &env.current_contract_address(),
+                &claim.claimant,
+                &payout,
+            );
+
+            env.events().publish(
+                (symbol_short!("released"), bounty_id),
+                (claim_id, claim.claimant.clone(), payout, admin.clone()),
+            );
+
+            total_paid += payout;
+        }
+
+        bounty.status = BountyStatus::Released;
+        bounty.pending_claims -= shares.len();
+        set_persistent(&env, &key, &bounty);
+
         Ok(())
     }
 }
