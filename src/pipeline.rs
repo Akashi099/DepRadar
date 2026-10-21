@@ -9,8 +9,11 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cve::osv_client::{query_osv_batch, OsvBatchQuery};
 use crate::ignore::{Date, IgnoreFile, Suppressed};
@@ -54,6 +57,9 @@ pub struct ScanOptions<'a> {
     pub ignore: Option<&'a IgnoreFile>,
     /// The date suppression expiry is judged against; `None` means today.
     pub today: Option<Date>,
+    /// Whether to show progress indicators on stderr. Automatically disabled
+    /// when stderr is not a TTY.
+    pub show_progress: bool,
 }
 
 impl Default for ScanOptions<'_> {
@@ -63,6 +69,7 @@ impl Default for ScanOptions<'_> {
             advisories: Some(&OsvAdvisories),
             ignore: None,
             today: None,
+            show_progress: io::stderr().is_terminal(),
         }
     }
 }
@@ -255,8 +262,28 @@ pub fn scan_lockfile(path: impl AsRef<Path>, opts: &ScanOptions<'_>) -> Result<R
             .collect();
 
         if !queries.is_empty() {
+            let progress = if opts.show_progress {
+                let pb = ProgressBar::new(queries.len() as u64);
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template("{msg} [{bar:40.cyan/blue}] {pos}/{len} packages")
+                        .expect("valid template")
+                        .progress_chars("#>-"),
+                );
+                pb.set_message("Checking for vulnerabilities");
+                Some(pb)
+            } else {
+                None
+            };
+
             let results = source.query(&queries).map_err(ScanError::Advisories)?;
             queried = queries.len();
+
+            if let Some(pb) = &progress {
+                pb.set_position(queries.len() as u64);
+                pb.finish_and_clear();
+            }
+
             for ((dependency, _), advisory_ids) in pinned.iter().zip(results) {
                 for advisory_id in advisory_ids {
                     findings.push(finding(
