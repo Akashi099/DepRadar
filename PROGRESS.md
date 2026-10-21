@@ -505,18 +505,20 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Closes:** #82
 - **Status:** In review.
 
-### CLI — progress bar for OSV vulnerability checks
+### scanner — Markdown report format (initial implementation)
 
-- **What:** Adds a progress bar on stderr when checking packages against the
-  OSV API. Uses `indicatif` (already in `Cargo.toml`) to show
-  `Checking for vulnerabilities [###>---] 42/100 packages` during the
-  advisories stage in [`pipeline.rs`](src/pipeline.rs). The bar appears only
-  when stderr is a TTY and not in `--quiet` mode (`ScanOptions::show_progress`).
-  Non-TTY stderr (pipes, CI) sees no progress output. The bar clears itself
-  on completion so it doesn't clutter the final report.
-- **Tests:** Manual verification — progress appears when running
-  `depradar scan` on a lockfile with many dependencies, and disappears with
-  `--quiet` or when piped.
+- **What:** Adds initial Markdown report output format in
+  [`markdown.rs`](src/report/markdown.rs). Renders scan reports as Markdown
+  suitable for GitHub issues and PR comments. Output includes a summary
+  table (packages scanned, typosquats, vulnerabilities, suppressed,
+  warnings), detailed sections per finding with severity badges, and
+  sections for suppressed findings and warnings. Each finding shows package
+  details, ecosystem, severity, scope (direct/transitive), dependency path,
+  and specific details based on finding type (typosquat with edit distance
+  and homoglyph information, or vulnerability with OSV reference links).
+- **Tests:** Snapshot test using `insta` covering a report with both
+  typosquat and vulnerability findings. Unit tests for severity badge colors
+  and ecosystem formatting across all supported ecosystems.
 - **By:** coderolisa
-- **Closes:** Part of an issue (1% contribution)
-- **Status:** In review.
+- **Closes:** Partial contribution to markdown report issue (1% implementation)
+- **Status:** In progress.
