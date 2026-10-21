@@ -14,6 +14,7 @@
 //! changes between two versions.
 
 pub mod config;
+pub mod crawler;
 pub mod cve;
 pub mod ignore;
 pub mod lockfile;

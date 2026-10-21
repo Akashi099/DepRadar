@@ -93,6 +93,7 @@ enum DataKey {
     Claim(u64, u32),
     ClaimBy(u64, Address),
     AllowedToken(Address),
+    Paused,
 }
 
 #[contracterror]
@@ -115,6 +116,7 @@ pub enum Error {
     NoPendingAdmin = 19,
     InvalidShares = 20,
     TokenNotAllowed = 21,
+    Paused = 22,
 }
 
 #[contract]
@@ -123,6 +125,25 @@ pub struct DepRaderRouter;
 #[contractimpl]
 impl DepRaderRouter {
     // ---------------------------------------------------------------- admin
+
+    /// Pauses or resumes operations that can lock or distribute bounty funds.
+    pub fn set_paused(env: Env, paused: bool) -> Result<(), Error> {
+        let admin = require_admin(&env)?;
+        env.storage().instance().set(&DataKey::Paused, &paused);
+        bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("pause"),), (paused, admin));
+        Ok(())
+    }
+
+    /// Returns whether bounty operations are paused. New deployments start
+    /// unpaused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
 
     /// Sets the contract admin. Must be called once before any bounty can be
     /// created, so funds are never locked in a contract nobody can resolve.
@@ -197,7 +218,7 @@ impl DepRaderRouter {
             .persistent()
             .remove(&DataKey::AllowedToken(token.clone()));
         env.events()
-            .publish((symbol_short!("tkn_dislow"),), (token, admin));
+            .publish((symbol_short!("tkn_deny"),), (token, admin));
         Ok(())
     }
 
@@ -338,10 +359,8 @@ impl DepRaderRouter {
             &amount,
         );
 
-        env.events().publish(
-            (symbol_short!("funded"), bounty_id),
-            (funder, amount),
-        );
+        env.events()
+            .publish((symbol_short!("funded"), bounty_id), (funder, amount));
         Ok(())
     }
 
@@ -629,35 +648,33 @@ impl DepRaderRouter {
 
         // Calculate and distribute payouts
         let token_client = token::Client::new(&env, &bounty.token);
-        let mut total_paid: i128 = 0;
+        let mut total_base: i128 = 0;
+        for i in 0..shares.len() {
+            let (_, bps) = shares.get(i).unwrap();
+            total_base += (bounty.amount * (bps as i128)) / 10_000;
+        }
+        let rounding_remainder = bounty.amount - total_base;
 
         for i in 0..shares.len() {
             let (claim_id, bps) = shares.get(i).unwrap();
             let mut claim: Claim =
                 get_persistent(&env, &DataKey::Claim(bounty_id, claim_id)).unwrap();
 
-            let payout = if i == 0 {
-                // First share gets remainder
-                bounty.amount - total_paid
-            } else {
-                (bounty.amount * (bps as i128)) / 10_000
-            };
+            let mut payout = (bounty.amount * (bps as i128)) / 10_000;
+            if i == 0 {
+                // The first share receives the rounding remainder only.
+                payout += rounding_remainder;
+            }
 
             claim.status = ClaimStatus::Accepted;
             set_persistent(&env, &DataKey::Claim(bounty_id, claim_id), &claim);
 
-            token_client.transfer(
-                &env.current_contract_address(),
-                &claim.claimant,
-                &payout,
-            );
+            token_client.transfer(&env.current_contract_address(), &claim.claimant, &payout);
 
             env.events().publish(
                 (symbol_short!("released"), bounty_id),
                 (claim_id, claim.claimant.clone(), payout, admin.clone()),
             );
-
-            total_paid += payout;
         }
 
         bounty.status = BountyStatus::Released;

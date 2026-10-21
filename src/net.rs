@@ -175,6 +175,27 @@ impl PoliteClient {
         response.json().map_err(NetError::Decode)
     }
 
+    /// GET `url` with an additional header, applying the same per-host rate
+    /// limit and timeout as [`Self::get_json`].
+    pub fn get_json_with_header<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<T, NetError> {
+        self.await_turn(url)?;
+        let response = self
+            .http
+            .get(url)
+            .header(name, value)
+            .send()
+            .map_err(NetError::Request)?;
+        if !response.status().is_success() {
+            return Err(NetError::Status(response.status()));
+        }
+        response.json().map_err(NetError::Decode)
+    }
+
     /// GET `url` and return the body as text, erroring on non-2xx.
     pub fn get_text(&self, url: &str) -> Result<String, NetError> {
         let response = self.get(url, true)?;
