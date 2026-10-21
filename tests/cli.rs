@@ -349,3 +349,30 @@ fn invalid_config_file_exits_with_code_2() {
         "error message should mention depradar.toml: {stderr}"
     );
 }
+
+#[test]
+fn completions_outputs_non_empty_script_for_each_shell() {
+    for shell in ["bash", "zsh", "fish", "powershell"] {
+        let output = depradar().args(["completions", shell]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "completions for {shell} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout.trim().is_empty(),
+            "expected non-empty completion script for {shell}"
+        );
+        assert!(
+            stdout.contains("depradar"),
+            "expected completion script for {shell} to reference `depradar`"
+        );
+    }
+}
+
+#[test]
+fn completions_rejects_unknown_shell() {
+    let output = depradar().args(["completions", "tcsh"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}

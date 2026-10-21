@@ -175,6 +175,33 @@ tab:
 
 The upload job needs the `security-events: write` permission.
 
+### Shell completions
+
+Generate completion scripts for your shell with `depradar completions <bash|zsh|fish|powershell>`:
+
+- **Bash**
+  ```sh
+  mkdir -p ~/.local/share/bash-completion/completions
+  depradar completions bash > ~/.local/share/bash-completion/completions/depradar
+  ```
+- **Zsh**
+  ```sh
+  mkdir -p ~/.zfunc
+  depradar completions zsh > ~/.zfunc/_depradar
+  # Ensure ~/.zfunc is on your fpath before compinit in ~/.zshrc:
+  # fpath=(~/.zfunc $fpath)
+  # autoload -Uz compinit && compinit
+  ```
+- **Fish**
+  ```sh
+  mkdir -p ~/.config/fish/completions
+  depradar completions fish > ~/.config/fish/completions/depradar.fish
+  ```
+- **PowerShell**
+  ```powershell
+  depradar completions powershell >> $PROFILE
+  ```
+
 ## Live on Testnet
 
 The router contract is deployed and has completed a full bounty lifecycle
