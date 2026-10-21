@@ -13,7 +13,10 @@ use serde_json::{json, Value};
 use deprader::config::{load_project_config, ConfigFormat, FailOn, ProjectConfig};
 use deprader::ignore::{IgnoreFile, Suppressed, IGNORE_FILE_NAME};
 use deprader::model::{Ecosystem, Finding, FindingKind};
-use deprader::pipeline::{scan_dir, scan_lockfile, DirReport, Report, ScanOptions};
+use deprader::pipeline::{
+    scan_dir, scan_lockfile, watch_packages, DirReport, FakeCrawler as WatchFakeCrawler, Report,
+    ScanOptions,
+};
 use deprader::report::{severity_of, AdvisorySeverities, Severity};
 use deprader::typosquat::scanner::{score_package, ScanResult};
 
@@ -35,7 +38,7 @@ Exit codes:
 #[derive(Debug, Parser)]
 #[command(
     name = "depradar",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("DEPRADAR_GIT_SHA"), ")"),
     about = "Check package names and lockfiles for typosquats and known vulnerabilities",
     after_help = EXAMPLES
 )]
@@ -261,6 +264,10 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Watch {
+            registry,
+            min_confidence,
+        } => run_watch(registry, min_confidence),
     }
 }
 
@@ -492,7 +499,7 @@ fn run_watch(registry: Registry, min_confidence: u8) -> ExitCode {
     // For now we use a FakeCrawler with an empty list so the binary exits
     // cleanly; the real crawler will be wired in once the registry clients
     // land.
-    let crawler = FakeCrawler::new(std::iter::empty::<String>(), 64);
+    let crawler = WatchFakeCrawler::new(std::iter::empty::<String>(), 64);
     let threshold = min_confidence.max(WATCH_CONFIDENCE_THRESHOLD);
     watch_packages(crawler, |line| {
         // Re-parse to apply the caller-supplied threshold; the inner loop
