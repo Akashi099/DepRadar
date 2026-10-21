@@ -548,3 +548,81 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** david-tanko
 - **Closes:** #85
 - **Status:** Merged.
+
+### behavioral — safe npm tarball download and unpack
+
+- **What:** Adds `src/behavioral/tarball.rs`. `download_npm_dist` downloads
+  `dist.tarball` through the shared polite HTTP client, caps the body at
+  50 MB, and verifies `dist.integrity` as a SHA-512 SRI digest before
+  returning any bytes (`verify_integrity` accepts several SRI tokens and
+  requires at least one matching `sha512-` value). `unpack_tarball`
+  decompresses a gzipped npm tarball into memory, never writing a
+  path taken from the archive and never executing anything. `UnpackLimits`
+  caps total unpacked bytes (50 MB), per-file bytes, entry count (10,000)
+  and path length (1 KB); absolute paths, `..`, backslashes, drive prefixes,
+  NULs, non-UTF-8 paths, duplicate paths, symlinks, hard links and all other
+  non-file/non-directory entry types are rejected. The npm `package/` prefix
+  is stripped only when every entry is under it. Returns sorted
+  `PackageFile { path, data }` values.
+- **Tests:** crafted tar.gz archives for path traversal, absolute paths,
+  Windows-style paths, symlinks, hard links, size bombs, total-size caps,
+  file-count caps, duplicates, non-UTF-8/overlong paths and corrupt gzip;
+  SHA-512 verification (match, tamper, missing, malformed, multi-token) and
+  mocked download size/integrity checks.
+- **By:** ushpraise
+- **Closes:** #100
+- **Status:** In review.
+
+### behavioral — npm install-script detector
+
+- **What:** Adds `src/behavioral/scripts.rs`.
+  `install_scripts(package_json) -> Vec<(String, String)>` parses
+  `package.json` and returns `preinstall`, `install`, `postinstall` and
+  `prepare` commands in lifecycle order; invalid JSON, unrelated scripts and
+  non-string values are ignored. `InstallScript::finding` wraps each one as a
+  medium-severity `BehavioralFinding` on `package.json`, and
+  `install_script_findings` returns them all. Nothing is executed.
+- **Tests:** no scripts, one script, all four hooks (with unrelated entries
+  mixed in), non-string values, and the finding message/severity.
+- **By:** ushpraise
+- **Closes:** #99
+- **Status:** In review.
+
+### behavioral — obfuscated JavaScript heuristics
+
+- **What:** Adds `src/behavioral/obfuscation.rs`. `score_javascript` scores a
+  file on base64 runs of 200+ characters (3 points), hex runs of 200+
+  characters (4), `eval(` (2), `new Function(` (3), `atob(` (2),
+  high-entropy 128+ character string literals (2 each, max 4) and source
+  lines over 2,000 characters (1). `OBFUSCATION_THRESHOLD` is 4, so a
+  minified bundle's single long-line point is not enough; scores of 8+ are
+  high severity, 4–7 medium. Markers are counted only in code, with comments
+  and string contents masked. `scan_obfuscation` emits the finding and
+  `scan_tree` walks `.js`/`.mjs`/`.cjs` files (5 MB per-file cap).
+- **Tests:** a minified-but-benign file is not flagged; an `atob` + base64 +
+  `eval` sample is flagged high; hex blobs, short blobs, markers in
+  strings/comments, lookalike identifiers, long-line-only files and tree
+  scanning.
+- **By:** ushpraise
+- **Closes:** #101
+- **Status:** In review.
+
+### behavioral — network and credential access in install scripts
+
+- **What:** Adds `src/behavioral/network.rs`. `scan_script` line-scans a
+  command or invoked script for `curl`/`wget` piped to
+  `sh`/`bash`/`zsh`/`dash`/`fish` (including `sh -c "$(curl ...)"`; high),
+  HTTP(S) requests to raw IPv4 literals (medium), and reads of `NPM_TOKEN`,
+  `AWS_*`, `GITHUB_TOKEN`/`GH_TOKEN`, `~/.ssh` and `~/.npmrc` (high).
+  Findings include a line number and a snippet truncated to 80 characters.
+  `scan_install_scripts` labels findings with the package.json hook, and
+  `scan_package` follows local script files named by lifecycle commands
+  (`node scripts/install.js`, `sh ./setup.sh`), refusing absolute or `..`
+  paths.
+- **Tests:** one per pattern (curl pipe, wget pipe, raw-IP request, npm/AWS/
+  GitHub tokens, SSH/npmrc access), a benign build script that must not flag,
+  snippet truncation, and following invoked files without escaping the
+  package root.
+- **By:** ushpraise
+- **Closes:** #102
+- **Status:** In review.

@@ -13,6 +13,7 @@
 //! install-time `setup.py` calls, shipped native binaries, and risky
 //! changes between two versions.
 
+pub mod behavioral;
 pub mod config;
 pub mod crawler;
 pub mod cve;
