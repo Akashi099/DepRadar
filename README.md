@@ -27,15 +27,16 @@ flowchart LR
 
     classDef live    fill:#134e4a,stroke:#2dd4bf,color:#e6fffa;
     classDef planned fill:#1e293b,stroke:#475569,color:#94a3b8,stroke-dasharray:4;
-    class Router,Scanner,Dashboard live;
-    class Crawler,Drips planned;
+    class Router,Scanner,Dashboard,Crawler live;
+    class Drips planned;
 ```
 
 **Solid teal** = live / substantially complete.  **Dashed** = planned — see
 [Status & Roadmap](#status--roadmap).
 
-- **Crawler** walks registries (npm, PyPI, crates.io, and others as modules
-  land) for new packages, new versions, and metadata changes.
+- **Crawler** uses a shared checkpoint/event contract. The npm crawler reads
+  the registry changes feed for new packages and versions; additional
+  registries and scanner wiring are still in progress.
 - **Scanner** evaluates what the crawler surfaces against three detection
   classes: known-CVE matching, typosquat similarity, and behavioral
   analysis (install scripts, obfuscation, anomalous permission requests).
@@ -78,6 +79,35 @@ Useful options (run `depradar --help` for the full list):
 
 Findings accepted in a `.depradarignore` next to the lockfile are reported
 as suppressed and never fail the run.
+
+### Install a prebuilt CLI
+
+Download the archive for Linux x86_64, macOS Apple Silicon (aarch64), or
+Windows x86_64 from the [latest GitHub release](https://github.com/DepRadarOrg/DepRadar/releases/latest).
+Each archive has a matching `.sha256` file. Verify it before extracting:
+
+```sh
+# Linux
+sha256sum -c depradar-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf depradar-x86_64-unknown-linux-gnu.tar.gz
+
+# macOS
+shasum -a 256 -c depradar-aarch64-apple-darwin.tar.gz.sha256
+tar -xzf depradar-aarch64-apple-darwin.tar.gz
+```
+
+On Windows, compare the archive hash in PowerShell:
+
+```powershell
+$actual = (Get-FileHash -Algorithm SHA256 .\depradar-x86_64-pc-windows-msvc.zip).Hash.ToLower()
+$expected = ((Get-Content .\depradar-x86_64-pc-windows-msvc.zip.sha256).Trim() -split '\s+')[0]
+if ($actual -ne $expected) { throw 'SHA-256 mismatch' }
+Write-Output 'SHA-256 verified'
+```
+
+The SHA-256 values must match. Extract the archive and place `depradar` (or
+`depradar.exe`) on your `PATH`. The release does not require a Rust toolchain.
+Builds report their version and source commit with `depradar --version`.
 
 ### Project config file (`depradar.toml`)
 
@@ -245,6 +275,8 @@ verified, with the full trail auditable by anyone.
 | Repository health — MIT license, SECURITY.md, Code of Conduct, PR/issue templates, CODEOWNERS, Dependabot, CI split into fmt/clippy/test/wasm/client jobs, weekly `cargo audit` + `npm audit` | [`41903c3`](https://github.com/DepRadarOrg/DepRadar/commit/41903c3) |
 | Read-only web dashboard — bounty list and bounty detail with claims, live from testnet (`frontend/`) | _(see PROGRESS.md)_ |
 | Hardened Bounty Router v2 — multiple claims per bounty, `reject_claim`, deadlines + `cancel_bounty` refunds, contract-assigned IDs, events, storage TTL management, two-step admin rotation; redeployed and verified on testnet | [`79326f2`](https://github.com/DepRadarOrg/DepRadar/commit/79326f2) |
+| CLI release archives for Linux, macOS and Windows with SHA-256 checksums; `depradar --version` includes the source commit | [#87](https://github.com/DepRadarOrg/DepRadar/issues/87), [#88](https://github.com/DepRadarOrg/DepRadar/issues/88) |
+| Shared crawler checkpoint/event contract and npm registry changes-feed crawler | [#89](https://github.com/DepRadarOrg/DepRadar/issues/89), [#90](https://github.com/DepRadarOrg/DepRadar/issues/90) |
 | Popular-package reference dataset — npm and PyPI top-1000 curated lists (`data/popular-packages/`) and dataset loader (`src/typosquat/dataset.rs`) | [#1](https://github.com/DepRadarOrg/DepRadar/pull/1) |
 | Levenshtein edit-distance scorer and `nearest_match` for typosquat detection (`src/typosquat/distance.rs`) | [#2](https://github.com/DepRadarOrg/DepRadar/pull/2) |
 | Homoglyph (lookalike-character) signal — Unicode confusable normalization and `homoglyph_impersonation` (`src/typosquat/homoglyph.rs`) | [#7](https://github.com/DepRadarOrg/DepRadar/pull/7) |
@@ -255,7 +287,7 @@ verified, with the full trail auditable by anyone.
 
 ### Open
 
-- Crawler modules (per-registry: npm, PyPI, crates.io, …)
+- Additional registry crawlers (PyPI, crates.io, …) and scanner wiring
 - Full scanner pipeline wiring (crawler → scanner → `create_bounty`)
 - Behavioral analysis (install scripts, obfuscation, anomalous permission requests)
 - Dashboard features: filters, search, live event feed, wallet-connected actions

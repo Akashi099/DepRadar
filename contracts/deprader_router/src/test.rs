@@ -9,13 +9,6 @@ use soroban_sdk::{
     Address, Env, String, Symbol, TryFromVal,
 };
 
-mod testutils {
-    soroban_sdk::contractimport!(
-        file = "../../target/wasm32-unknown-unknown/release/deprader_router.wasm"
-    );
-    pub type DepRaderRouterV2Client<'a> = Client<'a>;
-}
-
 const START: u64 = 1_000_000;
 const DEADLINE: u64 = START + 30 * 24 * 60 * 60;
 const AMOUNT: i128 = 400;
@@ -32,6 +25,10 @@ struct Setup<'a> {
 /// in which `creator` holds 1_000 units. All auths are mocked; tests that
 /// care about *who* authorized a call check `env.auths()`.
 fn setup<'a>() -> Setup<'a> {
+    setup_with_token_allowlist(true)
+}
+
+fn setup_with_token_allowlist<'a>(allow_token: bool) -> Setup<'a> {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(START);
@@ -47,6 +44,9 @@ fn setup<'a>() -> Setup<'a> {
     let contract_id = env.register(DepRaderRouter, ());
     let client = DepRaderRouterClient::new(&env, &contract_id);
     client.initialize(&admin);
+    if allow_token {
+        client.allow_token(&sac.address());
+    }
 
     Setup {
         env,
@@ -125,6 +125,29 @@ fn test_create_requires_initialized_contract() {
         &DEADLINE,
     );
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_admin_can_pause_and_resume_bounty_operations() {
+    let t = setup();
+    assert!(!t.client.is_paused());
+
+    t.client.set_paused(&true);
+    assert!(t.client.is_paused());
+    assert_eq!(
+        t.client.try_create_bounty(
+            &t.creator,
+            &t.s("org/repo#paused"),
+            &AMOUNT,
+            &t.token.address,
+            &DEADLINE,
+        ),
+        Err(Ok(Error::Paused))
+    );
+
+    t.client.set_paused(&false);
+    assert!(!t.client.is_paused());
+    assert_eq!(t.create(), 1);
 }
 
 // ------------------------------------------------------------ create_bounty
@@ -689,7 +712,7 @@ fn test_cancel_bounty_refunds_all_funders_proportionally() {
 
     // Each funder gets back exactly what they put in
     assert_eq!(t.token.balance(&t.creator), 1_000 - AMOUNT + AMOUNT);
-    assert_eq!(t.token.balance(&funder2), 600 - 600 + 600);
+    assert_eq!(t.token.balance(&funder2), 600);
     assert_eq!(t.token.balance(&t.client.address), 0);
 }
 
@@ -807,7 +830,7 @@ fn test_extend_deadline_checks_auth() {
 
 #[test]
 fn test_allow_token_works() {
-    let t = setup();
+    let t = setup_with_token_allowlist(false);
 
     assert!(!t.client.is_token_allowed(&t.token.address));
 
@@ -826,14 +849,14 @@ fn test_disallow_token_works() {
 
     t.client.disallow_token(&t.token.address);
     assert_eq!(t.last_auth(), t.admin);
-    assert_eq!(t.last_event_topic(), symbol_short!("tkn_dislow"));
+    assert_eq!(t.last_event_topic(), symbol_short!("tkn_deny"));
 
     assert!(!t.client.is_token_allowed(&t.token.address));
 }
 
 #[test]
 fn test_create_bounty_rejects_disallowed_token() {
-    let t = setup();
+    let t = setup_with_token_allowlist(false);
 
     let result = t.client.try_create_bounty(
         &t.creator,
@@ -857,7 +880,6 @@ fn test_create_bounty_works_with_allowed_token() {
 #[test]
 fn test_non_admin_cannot_change_allowlist() {
     let t = setup();
-    let stranger = Address::generate(&t.env);
 
     t.env.set_auths(&[]);
     assert!(t.client.try_allow_token(&t.token.address).is_err());

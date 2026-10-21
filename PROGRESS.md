@@ -10,6 +10,51 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Entries
 
+### Release binaries for the CLI — #88
+
+- **What:** Adds a tag-triggered GitHub Actions workflow that builds the
+  `depradar` CLI for Linux x86_64, macOS Apple Silicon, and Windows x86_64.
+  Each release archive includes a SHA-256 checksum. The README documents
+  downloading, checksum verification, and extraction without a Rust toolchain.
+- **By:** dev-fani
+- **Closes:** #88
+- **Status:** Implemented; release workflow validation is recorded in the PR.
+
+### CLI build identifier — #87
+
+- **What:** `depradar --version` now prints the package semver and the full
+  Git commit SHA embedded at build time. Builds without an available Git
+  checkout report `unknown`. An integration test checks the output format.
+- **By:** dev-fani
+- **Closes:** #87
+- **Status:** Implemented; verification is recorded in the PR.
+
+### Shared crawler contract and checkpoints — #89
+
+- **What:** Defines the shared `Crawler` trait, numeric sequence
+  `Checkpoint`, and typed `PackageEvent` model. Its cursor documentation
+  specifies retry and persistence behavior. Adds an in-memory `FakeCrawler`
+  with a checkpoint advancement test.
+- **By:** dev-fani
+- **Closes:** #89
+- **Status:** Implemented; verification is recorded in the PR.
+
+### npm changes-feed crawler — #90
+
+- **What:** Adds `NpmCrawler` for npm's CouchDB `_changes` feed. It pages
+  through feed changes, emits new-package and new-version events, resumes
+  from the sequence checkpoint, and uses the shared rate-limited HTTP client.
+  The implementation follows npm's current `/registry/_changes` endpoint;
+  because it omits package documents, changed package metadata is fetched
+  separately from the public registry.
+  Mocked HTTP tests cover paging, resumption, version classification and
+  packages that return 404. A live poll from sequence `138448270` advanced to
+  `138448271` and emitted no event for the sampled metadata update; the PR
+  records that run.
+- **By:** dev-fani
+- **Closes:** #90
+- **Status:** Implemented; verification is recorded in the PR.
+
 ### deprader_router contract — create_bounty / submit_claim / release
 
 - **What:** Initial Soroban smart contract at `contracts/deprader_router/`.
@@ -474,46 +519,20 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Closes:** #86
 - **Status:** In review.
 
-### CLI — project config file (`depradar.toml`)
+### scanner — Markdown report format (initial implementation)
 
-- **What:** Adds `src/config.rs` with a `ProjectConfig` struct that `depradar
-  scan` loads from `depradar.toml` in the working directory. The file supports
-  four keys:
-  - `fail_on` — severity threshold for a non-zero exit code
-    (`low`/`medium`/`high`/`critical`/`none`; default `high`).
-  - `format` — output format (`text`/`json`; default `text`).
-  - `exclude` — array of glob patterns for lockfile paths to skip.
-  - `ecosystems` — array of ecosystems to restrict scanning to (`npm`,
-    `pypi`, `cargo`, `go`, `maven`, `rubygems`, `packagist`; default: all).
-
-  Loading is strictly opt-in: if no `depradar.toml` exists the built-in
-  defaults are unchanged. An existing but malformed file exits with code 2 and
-  a clear error pointing to the file. Unknown keys are rejected.
-
-  Precedence is: **built-in defaults ← `depradar.toml` ← CLI flags**. CLI
-  flags always win, so existing scripts and one-off commands are unaffected.
-  The `--fail-on`, `--exclude`, and `--ecosystem` flags are new on the CLI
-  (previously undocumented/unimplemented), and `--format` is now optional
-  rather than defaulting on the struct level, giving the file a chance to
-  provide the default.
-
-- **Tests:**
-  - Unit tests in `src/config.rs`: `FailOn` ordering, round-trip
-    `FromStr`/`Display` for all three enums, full-config TOML parse,
-    empty-file parse, unknown-key rejection, invalid enum value rejection,
-    `load_project_config` returning `None` when absent, loading from a
-    directory, and error on malformed TOML.
-  - Integration tests in `tests/cli.rs`: config file format setting used
-    when no flag is passed; CLI `--format` overrides the file; `fail_on =
-    "none"` exits 0 with findings; `--fail-on high` overrides `fail_on =
-    "none"` in the file; `exclude` pattern skips a path; CLI `--exclude`
-    overrides the file; no config file uses defaults; invalid config exits 2
-    with a message mentioning `depradar.toml`.
-  - `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test --workspace`
-    all pass.
-- **Docs:** README updated with a `depradar.toml` section, a key reference
-  table, and an updated CLI options table reflecting the newly implemented
-  flags.
-- **By:** david-tanko
-- **Closes:** #85
-- **Status:** Merged.
+- **What:** Adds initial Markdown report output format in
+  [`markdown.rs`](src/report/markdown.rs). Renders scan reports as Markdown
+  suitable for GitHub issues and PR comments. Output includes a summary
+  table (packages scanned, typosquats, vulnerabilities, suppressed,
+  warnings), detailed sections per finding with severity badges, and
+  sections for suppressed findings and warnings. Each finding shows package
+  details, ecosystem, severity, scope (direct/transitive), dependency path,
+  and specific details based on finding type (typosquat with edit distance
+  and homoglyph information, or vulnerability with OSV reference links).
+- **Tests:** Snapshot test using `insta` covering a report with both
+  typosquat and vulnerability findings. Unit tests for severity badge colors
+  and ecosystem formatting across all supported ecosystems.
+- **By:** coderolisa
+- **Closes:** Partial contribution to markdown report issue (1% implementation)
+- **Status:** In progress.

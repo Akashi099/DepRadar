@@ -14,7 +14,10 @@ use serde_json::{json, Value};
 use deprader::config::{load_project_config, ConfigFormat, FailOn, ProjectConfig};
 use deprader::ignore::{IgnoreFile, Suppressed, IGNORE_FILE_NAME};
 use deprader::model::{Ecosystem, Finding, FindingKind};
-use deprader::pipeline::{scan_dir, scan_lockfile, DirReport, Report, ScanOptions};
+use deprader::pipeline::{
+    scan_dir, scan_lockfile, watch_packages, DirReport, FakeCrawler as WatchFakeCrawler, Report,
+    ScanOptions,
+};
 use deprader::report::{severity_of, AdvisorySeverities, Severity};
 use deprader::typosquat::scanner::{score_package, ScanResult};
 
@@ -36,7 +39,7 @@ Exit codes:
 #[derive(Debug, Parser)]
 #[command(
     name = "depradar",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("DEPRADAR_GIT_SHA"), ")"),
     about = "Check package names and lockfiles for typosquats and known vulnerabilities",
     after_help = EXAMPLES
 )]
@@ -51,6 +54,10 @@ struct Cli {
     /// `fail_on` in `depradar.toml`.
     #[arg(long, value_enum, global = true)]
     fail_on: Option<FailOnArg>,
+
+    /// Suppress progress indicators and non-essential output
+    #[arg(long, short = 'q', global = true)]
+    quiet: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -240,43 +247,18 @@ fn main() -> ExitCode {
     };
 
     match cli.command {
-        Command::Name { package } => {
-            // `name` doesn't use fail_on / exclude / ecosystems — resolve
-            // format only.
-            let format = cli.format.unwrap_or_else(|| {
-                project_config
-                    .as_ref()
-                    .and_then(|f| f.format)
-                    .map(config_format_to_cli)
-                    .unwrap_or(Format::Text)
-            });
-            run_name(&package, format)
-        }
-        Command::Scan {
-            path,
-            offline,
-            exclude,
-            ecosystems,
-        } => {
-            let resolved = ResolvedConfig::resolve(
-                project_config.as_ref(),
-                cli.format,
-                cli.fail_on,
-                exclude,
-                ecosystems,
-            );
-            match scan(&path, offline, &resolved.exclude, &resolved.ecosystems) {
-                Ok(scanned) => {
-                    match (resolved.format, &scanned) {
-                        (Format::Text, Scanned::File(report)) => println!("{report}"),
-                        (Format::Text, Scanned::Dir(report)) => println!("{report}"),
-                        (Format::Json, scanned) => print_json(&scanned_json(scanned)),
-                    }
-                    if scanned_exceeds_threshold(&scanned, resolved.fail_on) {
-                        ExitCode::FAILURE
-                    } else {
-                        ExitCode::SUCCESS
-                    }
+        Command::Name { package } => run_name(&package, cli.format),
+        Command::Scan { path, offline } => match scan(&path, offline, cli.quiet) {
+            Ok(scanned) => {
+                match (cli.format, &scanned) {
+                    (Format::Text, Scanned::File(report)) => println!("{report}"),
+                    (Format::Text, Scanned::Dir(report)) => println!("{report}"),
+                    (Format::Json, scanned) => print_json(&scanned_json(scanned)),
+                }
+                if scanned.has_findings() {
+                    ExitCode::FAILURE
+                } else {
+                    ExitCode::SUCCESS
                 }
                 Err(message) => {
                     eprintln!("error: {message}");
@@ -464,13 +446,8 @@ fn glob_match_inner(pattern: &[u8], text: &[u8]) -> bool {
 
 /// Scans `path` as a single lockfile or, for a directory, every lockfile
 /// under it, honouring a `.depradarignore` next to the lockfile (or at the
-/// directory's root) and any `--exclude` glob patterns.
-fn scan(
-    path: &Path,
-    offline: bool,
-    exclude: &[String],
-    _ecosystems: &[String],
-) -> Result<Scanned, String> {
+/// directory's root).
+fn scan(path: &Path, offline: bool, quiet: bool) -> Result<Scanned, String> {
     let ignore_dir = if path.is_dir() {
         path
     } else {
@@ -499,6 +476,9 @@ fn scan(
     };
     if offline {
         opts.advisories = None;
+    }
+    if quiet {
+        opts.show_progress = false;
     }
 
     if path.is_dir() {
@@ -532,7 +512,7 @@ fn run_watch(registry: Registry, min_confidence: u8) -> ExitCode {
     // For now we use a FakeCrawler with an empty list so the binary exits
     // cleanly; the real crawler will be wired in once the registry clients
     // land.
-    let crawler = FakeCrawler::new(std::iter::empty::<String>(), 64);
+    let crawler = WatchFakeCrawler::new(std::iter::empty::<String>(), 64);
     let threshold = min_confidence.max(WATCH_CONFIDENCE_THRESHOLD);
     watch_packages(crawler, |line| {
         // Re-parse to apply the caller-supplied threshold; the inner loop
