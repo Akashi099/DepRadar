@@ -11,6 +11,8 @@
 use std::fmt;
 use std::sync::OnceLock;
 
+use serde::{Deserialize, Serialize};
+
 use super::bktree::BkTree;
 use super::combosquat::combosquat;
 use super::dataset::{popular_packages, popularity_rank};
@@ -46,7 +48,15 @@ pub fn threshold_for(len: usize) -> usize {
 
 /// Result of scoring a candidate package name against the typosquat
 /// signals.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializes to JSON with snake_case keys for the CLI and report formats.
+/// `distance_match` becomes a `[name, distance]` array and unset signals
+/// become `null`, e.g.
+/// `{"candidate":"expresss","distance_match":["express",1],"homoglyph_match":null,`
+/// `"digit_swap_match":null,"keyboard_typo":false,"scope_confusion":null,`
+/// `"combosquat":null,"confidence":40}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct ScanResult {
     /// The name that was scored, as given by the caller.
     pub candidate: String,
@@ -282,8 +292,8 @@ mod tests {
     #[test]
     fn unrelated_name_is_not_flagged() {
         // Long and distinctive enough that its nearest dataset neighbour is
-        // far past the threshold (verified: distance 26 to the closest npm
-        // entry).
+        // far past the threshold (verified: distance 24 to the closest
+        // entry, npm's `define-data-property`).
         let result = score_package("definitely-not-a-real-package-zzz123");
         assert_eq!(result.distance_match, None);
         assert_eq!(result.homoglyph_match, None);
@@ -329,6 +339,26 @@ mod tests {
         assert!(rendered.contains("likely typosquat"));
         assert!(rendered.contains("edit distance 1 from popular package \"react\""));
         assert!(rendered.contains("homoglyph impersonation of popular package \"react\""));
+    }
+
+    #[test]
+    fn serializes_to_exact_json_for_distance_match() {
+        let result = score_package("expresss");
+        let json = serde_json::to_string(&result).expect("ScanResult serializes");
+        assert_eq!(
+            json,
+            r#"{"candidate":"expresss","distance_match":["express",1],"homoglyph_match":null,"digit_swap_match":null,"keyboard_typo":false,"scope_confusion":null,"combosquat":null,"confidence":40}"#
+        );
+    }
+
+    #[test]
+    fn json_round_trips_back_to_the_same_result() {
+        for name in ["expresss", "re\u{0430}ct", "react"] {
+            let result = score_package(name);
+            let json = serde_json::to_string(&result).expect("ScanResult serializes");
+            let back: ScanResult = serde_json::from_str(&json).expect("ScanResult deserializes");
+            assert_eq!(back, result, "round trip changed the result for {name:?}");
+        }
     }
 
     #[test]
