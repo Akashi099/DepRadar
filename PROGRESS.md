@@ -10,6 +10,51 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Entries
 
+### Release binaries for the CLI — #88
+
+- **What:** Adds a tag-triggered GitHub Actions workflow that builds the
+  `depradar` CLI for Linux x86_64, macOS Apple Silicon, and Windows x86_64.
+  Each release archive includes a SHA-256 checksum. The README documents
+  downloading, checksum verification, and extraction without a Rust toolchain.
+- **By:** dev-fani
+- **Closes:** #88
+- **Status:** Implemented; release workflow validation is recorded in the PR.
+
+### CLI build identifier — #87
+
+- **What:** `depradar --version` now prints the package semver and the full
+  Git commit SHA embedded at build time. Builds without an available Git
+  checkout report `unknown`. An integration test checks the output format.
+- **By:** dev-fani
+- **Closes:** #87
+- **Status:** Implemented; verification is recorded in the PR.
+
+### Shared crawler contract and checkpoints — #89
+
+- **What:** Defines the shared `Crawler` trait, numeric sequence
+  `Checkpoint`, and typed `PackageEvent` model. Its cursor documentation
+  specifies retry and persistence behavior. Adds an in-memory `FakeCrawler`
+  with a checkpoint advancement test.
+- **By:** dev-fani
+- **Closes:** #89
+- **Status:** Implemented; verification is recorded in the PR.
+
+### npm changes-feed crawler — #90
+
+- **What:** Adds `NpmCrawler` for npm's CouchDB `_changes` feed. It pages
+  through feed changes, emits new-package and new-version events, resumes
+  from the sequence checkpoint, and uses the shared rate-limited HTTP client.
+  The implementation follows npm's current `/registry/_changes` endpoint;
+  because it omits package documents, changed package metadata is fetched
+  separately from the public registry.
+  Mocked HTTP tests cover paging, resumption, version classification and
+  packages that return 404. A live poll from sequence `138448270` advanced to
+  `138448271` and emitted no event for the sampled metadata update; the PR
+  records that run.
+- **By:** dev-fani
+- **Closes:** #90
+- **Status:** Implemented; verification is recorded in the PR.
+
 ### deprader_router contract — create_bounty / submit_claim / release
 
 - **What:** Initial Soroban smart contract at `contracts/deprader_router/`.
