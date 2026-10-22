@@ -620,3 +620,33 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** coderolisa
 - **Closes:** Partial contribution to markdown report issue (1% implementation)
 - **Status:** In progress.
+
+### deprader_router — claims indexed by claimant — #115
+
+- **What:** Adds a per-claimant claim index to `contracts/deprader_router`
+  so a researcher's profile page can list every claim they've made without
+  scanning every bounty.
+  - **Storage:** a new persistent `ClaimsOf(Address)` key holds a
+    `Vec<(u64, u32)>` of `(bounty_id, claim_id)` pairs for each claimant,
+    appended in `submit_claim` and extended on write like the other
+    persistent entries.
+  - **Cap:** the index is capped at `MAX_CLAIMS_PER_CLAIMANT` (100) entries,
+    documented on the constant. Once a claimant reaches the cap, further
+    claims are still recorded on the bounty but are not added to their
+    index; the oldest entries are kept.
+  - **Getter:** `get_claims_of(claimant, start, limit) -> Vec<(u64, u32)>`
+    returns a page of the claimant's index, starting at `start` and
+    returning at most `limit` entries (clamped to the remaining length), so
+    callers can page through long histories. An unknown claimant or an
+    out-of-range `start` returns an empty vector.
+- **Tests:** contract tests cover claims spread across several bounties
+  (each pair appears once, in submission order), pagination (`start` /
+  `limit` windows, including a `limit` past the end and an empty result for
+  an out-of-range `start`), and the cap (a claimant at
+  `MAX_CLAIMS_PER_CLAIMANT` keeps the documented entries and the index
+  length stops growing). Snapshots regenerated.
+- **Verified:** `cargo fmt`, `cargo clippy -- -D warnings`,
+  `cargo test --workspace` and the `wasm32v1-none` release build all pass.
+- **By:** ALLEN-AYODEJI
+- **Closes:** #115
+- **Status:** In review.
