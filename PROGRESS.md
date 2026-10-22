@@ -620,3 +620,45 @@ is closed — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **By:** coderolisa
 - **Closes:** Partial contribution to markdown report issue (1% implementation)
 - **Status:** In progress.
+
+### registry — yanked / deprecated version detection — #178
+
+- **What:** Adds yanked/deprecated detection to `src/registry/`. For npm,
+  the version metadata's `deprecated` field is read; for crates.io, the
+  version's `yanked` flag is read. A pinned version that is yanked or
+  deprecated produces an informational finding carrying the deprecation
+  message (or a yanked notice) so it surfaces in reports even when no CVE
+  matches.
+- **Tests:** Fixture tests for both registries — an npm version with a
+  `deprecated` message, a crates.io version with `yanked: true`, and
+  non-flagged versions that must produce no finding.
+- **By:** TBD
+- **Closes:** #178
+- **Status:** In review.
+
+### scanner — license policy check — #179
+
+- **What:** Adds `src/license.rs`, which fetches license metadata from each
+  registry (npm `license`, PyPI `info.license` and `classifiers`, crates.io
+  `license`) for the dependencies in a lockfile and flags any license not
+  in a configurable allowlist as a low-severity finding. The allowlist is
+  configurable so teams can match their own policy.
+- **Tests:** Unit tests with mocked registry responses covering allowed
+  licenses, disallowed licenses, and packages with missing or ambiguous
+  license metadata.
+- **By:** TBD
+- **Closes:** #179
+- **Status:** In review.
+
+### frontend — About page with contract admin and configuration — #181
+
+- **What:** Adds `/about` to `frontend/`, showing the current admin
+  (`get_admin`), the pending admin if one has been proposed, the contract
+  ID, the network, and the claim and refund rules in plain language. The
+  contract reads live in `frontend/src/lib/contract.ts`; the page is linked
+  from the top bar.
+- **Tests:** Component test rendering the About page with a mocked admin
+  (and pending admin) from a stubbed contract client.
+- **By:** TBD
+- **Closes:** #181
+- **Status:** In review.
